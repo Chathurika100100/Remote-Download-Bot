@@ -1,9 +1,27 @@
 import os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
+from threading import Thread
 
-# Environment Variables හරහා දත්ත ලබා ගැනීම (මෙය ඉතා ආරක්ෂිතයි)
-# මෙම අගයන් පසුව අපි Koyeb Dashboard එකේදී ලබා දෙනවා.
+# --- Koyeb Port Error එක විසඳීමට කුඩා වෙබ් සර්වර් එකක් ---
+app_web = Flask('')
+
+@app_web.route('/')
+def home():
+    return "Bot is running!"
+
+def run_web():
+    # Koyeb එක ඉල්ලන Port එකට බොට්ව සම්බන්ධ කරයි
+    port = int(os.environ.get("PORT", 8000))
+    app_web.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+# ---------------------------------------------------
+
+# Environment Variables (Koyeb එකේදී අපි ලබා දුන් දත්ත)
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("TOKEN", "")
@@ -40,5 +58,8 @@ async def link_handler(client, message):
         )
     )
 
-print("බොට් සාර්ථකව පණගැන්වුණා...")
-app.run()
+if __name__ == "__main__":
+    print("Web Server එක පණගැන්වෙනවා...")
+    keep_alive()  # මෙතැනින් වෙබ් සර්වර් එක පටන් ගන්නවා
+    print("බොට් සාර්ථකව පණගැන්වුණා...")
+    app.run()     # මෙතැනින් ටෙලිග්‍රෑම් බොට් වැඩ පටන් ගන්නවා
