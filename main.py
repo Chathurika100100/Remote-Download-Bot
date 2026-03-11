@@ -51,3 +51,5 @@ async def download_and_split(client, message):
 
 print("Bot is started...")
 app.run()
+
+os.system("python3 -m http.server 8000 &")
