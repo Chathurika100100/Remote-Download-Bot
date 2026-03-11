@@ -1,65 +1,53 @@
 import os
+import subprocess
+import requests
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask
-from threading import Thread
 
-# --- Koyeb Port Error එක විසඳීමට කුඩා වෙබ් සර්වර් එකක් ---
-app_web = Flask('')
+# Environment Variables හරහා රහස් විස්තර ලබා ගැනීම (ආරක්ෂිත ක්‍රමය)
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-@app_web.route('/')
-def home():
-    return "Bot is running!"
+app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-def run_web():
-    # Koyeb එක ඉල්ලන Port එකට බොට්ව සම්බන්ධ කරයි
-    port = int(os.environ.get("PORT", 8000))
-    app_web.run(host='0.0.0.0', port=port)
+@app.on_message(filters.command("download"))
+async def download_and_split(client, message):
+    if len(message.command) < 2:
+        await message.reply("කරුණාකර ලින්ක් එක ලබා දෙන්න. උදා: /download https://link.com/game.zip")
+        return
 
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-# ---------------------------------------------------
+    url = message.text.split(" ")[1]
+    file_name = "large_game.zip"
+    
+    status = await message.reply("බාගත කරමින් පවතී... (Downloading...)")
 
-# Environment Variables (Koyeb එකේදී අපි ලබා දුන් දත්ත)
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("TOKEN", "")
+    # 1. මුලින්ම ෆයිල් එක බාගැනීම
+    r = requests.get(url, stream=True)
+    with open(file_name, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=1024*1024*10): # 10MB chunks
+            if chunk:
+                f.write(chunk)
 
-# Bot එක පණගැන්වීම
-app = Client(
-    "remote_dl_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+    await status.edit("ෆයිල් එක කෑලි වලට කඩමින් පවතී... (Splitting into 1.95GB chunks...)")
 
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    user_name = message.from_user.first_name
-    await message.reply_text(
-        f"හලෝ {user_name}!\n\nමම Remote Download බොට්. මට ඕනෑම direct link එකක් එවන්න, මම ඒක ඔයාට ලේසියෙන් ඩවුන්ලෝඩ් කරගන්න උදව් කරන්නම්.",
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton("Developer", url="https://t.me/Chathurika100100")
-            ]]
-        )
-    )
+    # 2. Linux 'split' command එක පාවිච්චි කරලා 1.95GB කෑලි වලට කැඩීම
+    # Koyeb Linux නිසා මේක වැඩ කරනවා.
+    subprocess.run(["split", "-b", "1950M", file_name, "part_"])
 
-@app.on_message(filters.regex(r'http[s]?://'))
-async def link_handler(client, message):
-    url = message.text
-    await message.reply_text(
-        "ලින්ක් එක ලැබුණා! ඔයාට මේක දැන්ම ඩවුන්ලෝඩ් කරන්න අවශ්‍යද?",
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton("Download Now", url=url)
-            ]]
-        )
-    )
+    # මුල් ලොකු ෆයිල් එක මකා දැමීම (ඉඩ ඉතිරි කරගන්න)
+    os.remove(file_name)
 
-if __name__ == "__main__":
-    print("Web Server එක පණගැන්වෙනවා...")
-    keep_alive()  # මෙතැනින් වෙබ් සර්වර් එක පටන් ගන්නවා
-    print("බොට් සාර්ථකව පණගැන්වුණා...")
-    app.run()     # මෙතැනින් ටෙලිග්‍රෑම් බොට් වැඩ පටන් ගන්නවා
+    # 3. එකින් එක ටෙලිග්‍රෑම් එකට අප්ලෝඩ් කිරීම සහ මැකීම
+    parts = sorted([f for f in os.listdir('.') if f.startswith("part_")])
+    
+    for part in parts:
+        await status.edit(f"අප්ලෝඩ් කරමින් පවතී: {part}")
+        await client.send_document(message.chat.id, document=part)
+        
+        # අප්ලෝඩ් කළ පසු වහාම මකා දැමීම
+        os.remove(part)
+    
+    await message.reply("සියලුම කෑලි සාර්ථකව යවන ලදී! Hosting website එක පිරිසිදු කරන ලදී. ✅")
+
+print("Bot is started...")
+app.run()
