@@ -53,4 +53,43 @@ async def download_handler(client, message):
     
     with open(original_fn, 'wb') as f:
         dl = 0
-        for chunk in r.
+        for chunk in r.iter_content(chunk_size=1024*1024):
+            if chunk:
+                f.write(chunk)
+                dl += len(chunk)
+                # බාගත කිරීමේ ප්‍රගතිය පෙන්වීම
+                if total_size > 0 and dl % (10 * 1024 * 1024) < (1024 * 1024):
+                    await progress(dl, total_size, status_msg, "බාගත වෙමින්")
+
+    file_size = os.path.getsize(original_fn)
+    limit = 1900 * 1024 * 1024 # 1.9GB
+
+    # 2. Upload Logic
+    if file_size < limit:
+        # කුඩා ෆයිල් සඳහා කෙලින්ම අප්ලෝඩ් කිරීම
+        await status_msg.edit("අප්ලෝඩ් කිරීම අරඹනවා... 📤")
+        await client.send_document(
+            message.chat.id, 
+            document=original_fn, 
+            caption=f"✅ {original_fn}",
+            progress=progress, 
+            progress_args=(status_msg, "අප්ලෝඩ් වෙමින්")
+        )
+        os.remove(original_fn)
+    else:
+        # ලොකු ෆයිල් සඳහා කෑලි වලට කැඩීම
+        await status_msg.edit("විශාල ෆයිල් එකක් නිසා කෑලි වලට කඩනවා... ✂️")
+        subprocess.run(["split", "-b", "1900M", original_fn, "part_"])
+        parts = sorted([f for f in os.listdir('.') if f.startswith("part_")])
+        
+        for part in parts:
+            await status_msg.edit(f"අප්ලෝඩ් වෙමින්: {part} 📤")
+            await client.send_document(message.chat.id, document=part, file_name=f"{part}_{original_fn}")
+            os.remove(part)
+        os.remove(original_fn)
+
+    await message.reply("වැඩේ සම්පූර්ණයි! ✅")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    app.run()
