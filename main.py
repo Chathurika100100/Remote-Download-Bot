@@ -2,28 +2,24 @@ import os
 import subprocess
 import requests
 import threading
+import libtorrent as lt
+import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# 1. HTTP Protocol එකට ගැලපෙන Flask සර්වර් එක
+# 1. Flask සර්වර් එක (Koyeb සජීවීව තබා ගැනීමට)
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
-def home():
-    return "Bot is Alive and Running on HTTP Port 8000!"
+def home(): return "Bot is Alive!"
 
-def run_flask():
-    # Koyeb ඉල්ලන 8000 පෝර්ට් එකේ HTTP සර්වර් එක දුවවන්න
-    flask_app.run(host='0.0.0.0', port=8000)
+def run_flask(): flask_app.run(host='0.0.0.0', port=8000)
 
 # 2. Progress Bar පෙන්වන Function එක
 async def progress(current, total, message, type_msg):
     percent = current * 100 / total
-    if int(percent) % 10 == 0: # සෑම 10% කටම වරක් මැසේජ් එක අප්ඩේට් කරයි
-        try:
-            await message.edit(f"🚀 {type_msg}: {percent:.1f}%...")
-        except:
-            pass
+    if int(percent) % 10 == 0:
+        try: await message.edit(f"🚀 {type_msg}: {percent:.1f}%...")
+        except: pass
 
 # 3. Telegram Bot විස්තර
 API_ID = os.environ.get("API_ID")
@@ -32,47 +28,47 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-@app.on_message(filters.command("download"))
-async def download_and_split(client, message):
+# --- START COMMAND ---
+@app.on_message(filters.command("start") & filters.private)
+async def start(client, message):
+    await message.reply_text(
+        f"ආයුබෝවන් {message.from_user.first_name}! 🙏\n\n"
+        "මම ඔයාගේ File Downloader බොට්. මට පුළුවන්:\n"
+        "✅ Direct Links බාගන්න (/download [link])\n"
+        "✅ Torrent Magnet Links බාගන්න (/torrent [magnet])\n\n"
+        "ඔයාට උදව්වක් ඕනෙ නම් මට කියන්න!"
+    )
+
+# --- TORRENT DOWNLOADER ---
+@app.on_message(filters.command("torrent") & filters.private)
+async def torrent_download(client, message):
     if len(message.command) < 2:
-        await message.reply("කරුණාකර ලින්ක් එක ලබා දෙන්න.")
+        await message.reply("කරුණාකර Magnet Link එකක් දෙන්න. උදා: /torrent magnet:?xt=...")
         return
 
-    url = message.text.split(" ")[1]
-    file_name = "large_game.zip"
-    status_msg = await message.reply("Downloading... ⏳")
-
-    # බාගත කිරීම
-    response = requests.get(url, stream=True)
-    total_size = int(response.headers.get('content-length', 0))
-    downloaded = 0
-    with open(file_name, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=1024*1024):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total_size > 0:
-                    await progress(downloaded, total_size, status_msg, "Downloading")
-
-    await status_msg.edit("Splitting into 1.95GB chunks... ✂️")
-    subprocess.run(["split", "-b", "1950M", file_name, "part_"])
-    os.remove(file_name)
-
-    # අප්ලෝඩ් කිරීම
-    parts = sorted([f for f in os.listdir('.') if f.startswith("part_")])
-    for part in parts:
-        await status_msg.edit(f"Uploading: {part}")
-        await client.send_document(
-            message.chat.id, 
-            document=part,
-            progress=progress,
-            progress_args=(status_msg, f"Uploading {part}")
-        )
-        os.remove(part)
+    link = message.text.split(" ")[1]
+    status_msg = await message.reply("Torrent එක පරීක්ෂා කරමින්... ⏳")
     
-    await message.reply("සියලුම කෑලි සාර්ථකව යවන ලදී! ✅")
+    ses = lt.session()
+    params = {"save_path": "./downloads/"}
+    handle = lt.add_magnet_uri(ses, link, params)
+    
+    await status_msg.edit("Metadata ලබා ගනිමින්... (මඳක් රැඳී සිටින්න)")
+    while not handle.has_metadata(): time.sleep(1)
+    
+    await status_msg.edit(f"බාගත වෙමින් පවතී: {handle.status().name}")
+    
+    while not handle.status().is_seeding:
+        s = handle.status()
+        await status_msg.edit(f"Downloading Torrent: {s.progress * 100:.2f}% \nSpeed: {s.download_rate / 1000:.2f} kB/s")
+        time.sleep(5)
+
+    await status_msg.edit("බාගත කිරීම අවසන්! දැන් ටෙලිග්‍රෑම් එකට එවමින් පවතී...")
+    
+    file_path = f"./downloads/{handle.status().name}"
+    await client.send_document(message.chat.id, document=file_path)
+    os.remove(file_path)
 
 if __name__ == "__main__":
-    # Flask HTTP සර්වර් එක Background එකේ දුවවන්න
     threading.Thread(target=run_flask, daemon=True).start()
     app.run()
