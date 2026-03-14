@@ -3,3 +3,5 @@ tgcrypto
 requests
 flask
 speedtest-cli
+yt-dlp
+ffmpeg-python
