@@ -2,13 +2,13 @@ import os
 import requests
 import threading
 import time
-import speedtest # අලුතින් එකතු කළා
+import speedtest
 from flask import Flask
 from pyrogram import Client, filters
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot is Online with Speed Test!"
+def home(): return "Bot is Alive and Running!"
 
 def run_flask(): flask_app.run(host='0.0.0.0', port=8000)
 
@@ -27,45 +27,51 @@ app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    await message.reply_text(f"ආයුබෝවන් {message.from_user.first_name}! 🙏\nදැන් මට `/speed` කමාන්ඩ් එක හරහා සර්වර් වේගය පෙන්විය හැක.")
+    await message.reply_text(f"ආයුබෝවන් {message.from_user.first_name}! 🙏\nභාවිතය: `/download [link]`\nවේගය: `/speed`")
 
-# --- අලුත් SPEED COMMAND එක ---
+# --- FIXED SPEED COMMAND ---
 @app.on_message(filters.command("speed") & filters.private)
 async def speed_test(client, message):
-    msg = await message.reply_text("වේගය පරීක්ෂා කරමින් පවතී... ⏳\n(මේ සඳහා තත්පර කිහිපයක් ගතවේ)")
+    msg = await message.reply_text("වේගය පරීක්ෂා කරමින් පවතී... ⏳")
     try:
-        st = speedtest.Speedtest()
+        # Secure manner එකට speedtest එක run කිරීම
+        st = speedtest.Speedtest(secure=True) 
         st.get_best_server()
-        download_speed = st.download() / 1_000_000 # Mbps
-        upload_speed = st.upload() / 1_000_000 # Mbps
-        server_info = st.results.server
+        d = st.download() / 1_000_000
+        u = st.upload() / 1_000_000
         
-        speed_msg = (
-            "🚀 **Server Speed Test**\n\n"
-            f"🌍 **Region:** {server_info['country']} ({server_info['name']})\n"
+        await msg.edit(
+            f"🚀 **Server Speed Test**\n\n"
+            f"🌍 **Region:** {st.results.server['country']} ({st.results.server['name']})\n"
             f"⚡ **Ping:** {st.results.ping} ms\n"
-            f"📥 **Download:** {download_speed:.2f} Mbps\n"
-            f"📤 **Upload:** {upload_speed:.2f} Mbps"
+            f"📥 **Download:** {d:.2f} Mbps\n"
+            f"📤 **Upload:** {u:.2f} Mbps"
         )
-        await msg.edit(speed_msg)
     except Exception as e:
-        await msg.edit(f"වේගය පරීක්ෂා කිරීමේදී ගැටලුවක් විය: {e}")
+        # 403 Forbidden ආවොත් සරල මැසේජ් එකක් පෙන්වමු
+        await msg.edit(f"වේගය බැලීමේදී සර්වර් එකෙන් බාධා කළා. (Error: {e})\nනමුත් බාගත කිරීමේ වේගය වෙනස් වන්නේ නැත. ✅")
 
-# --- DOWNLOAD LOGIC (කලින් තිබුණ විදිහටම) ---
+# --- DOWNLOAD LOGIC (කලින් විදිහටම) ---
 @app.on_message(filters.command("download") & filters.private)
 async def download_handler(client, message):
-    if len(message.command) < 2: return
-    url = message.text.split(" ")[1]
+    if len(message.command) < 2:
+        await message.reply("ලින්ක් එකක් එවන්න!")
+        return
+    url = message.text.split(None, 1)[1]
+    if not url.startswith(("http://", "https://")):
+        await message.reply("වැරදි ලින්ක් එකක්! ❌")
+        return
+
     original_fn = url.split("/")[-1].split("?")[0] or "file"
     status_msg = await message.reply("පරීක්ෂා කරමින්... 🔍")
 
     try:
-        head = requests.head(url, allow_redirects=True)
+        head = requests.head(url, allow_redirects=True, timeout=10)
         total_size = int(head.headers.get('content-length', 0))
         limit = 1900 * 1024 * 1024
 
         if total_size < limit:
-            await status_msg.edit("බාගත කිරීම අරඹනවා... 📥")
+            await status_msg.edit("බාගත කිරීම ඇරඹුවා... 📥")
             r = requests.get(url, stream=True)
             with open(original_fn, 'wb') as f:
                 dl = 0
@@ -73,7 +79,7 @@ async def download_handler(client, message):
                     if chunk:
                         f.write(chunk)
                         dl += len(chunk)
-                        if total_size > 0 and dl % (10*1024*1024) < (1024*1024):
+                        if total_size > 0 and dl % (15*1024*1024) < (1024*1024):
                             await progress(dl, total_size, status_msg, "බාගත වෙමින්")
             await status_msg.edit("අප්ලෝඩ් කරමින්... 📤")
             await client.send_document(message.chat.id, document=original_fn, progress=progress, progress_args=(status_msg, "අප්ලෝඩ් වෙමින්"))
@@ -103,7 +109,7 @@ async def download_handler(client, message):
                 part_num += 1
         await status_msg.edit("වැඩේ සම්පූර්ණයි! ✅")
     except Exception as e:
-        await status_msg.edit(f"අවුලක් වුණා: {e}")
+        await status_msg.edit(f"අවුලක් වුණා: {str(e)}")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
