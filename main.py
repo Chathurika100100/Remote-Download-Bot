@@ -6,10 +6,10 @@ import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# Server එක පණගන්වා තැබීමට
+# Server එක Online තබා ගැනීමට
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot is Online - Full Version!"
+def home(): return "Bot is Online - Fully Fixed Version!"
 
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
@@ -28,62 +28,51 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 1. START MESSAGE (ඔයා ඉල්ලපු එක) ---
+# Headers (Browser එකක් ලෙස පෙනී සිටීමට - 196B error එක වැළැක්වීමට)
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    await message.reply_text(
-        "👋 **ආයුබෝවන් ප්‍රවීන්!**\n\n"
-        "මම ඔයාගේ Remote Download Bot. මට පුළුවන් ඕනෑම ලින්ක් එකක් කෙලින්ම ටෙලිග්‍රෑම් එකට එවන්න.\n\n"
-        "⚡ /download [link] - ෆයිල් බාගත කිරීමට\n"
-        "⚡ /speed - සර්වර් වේගය බැලීමට"
-    )
+    await message.reply_text("👋 ආයුබෝවන් ප්‍රවීන්!\n\n/download [link] එවන්න.\n/speed මගින් වේගය බලන්න.")
 
-# --- 2. SPEED TEST (LIBRARY METHOD) ---
 @app.on_message(filters.command("speed") & filters.private)
 async def test_speed(client, message):
     msg = await message.reply("වේගය පරීක්ෂා කරමින්... 🚀")
-    for i in range(2):
-        try:
-            st = speedtest.Speedtest(secure=True)
-            st.get_best_server()
-            d_speed = st.download() / 1_000_000
-            u_speed = st.upload() / 1_000_000
-            ping = st.results.ping
-            
-            await msg.edit(f"⚡ **සර්වර් වේගය:**\n\n"
-                           f"⬇️ Download: {d_speed:.2f} Mbps\n"
-                           f"⬆️ Upload: {u_speed:.2f} Mbps\n"
-                           f"📡 Ping: {ping} ms")
-            return
-        except Exception as e:
-            if i == 0:
-                time.sleep(3)
-                continue
-            await msg.edit(f"වේගය මැනීමේදී ගැටලුවක් විය: {e}")
+    try:
+        st = speedtest.Speedtest(secure=True)
+        st.get_best_server()
+        d_speed = st.download() / 1_000_000
+        u_speed = st.upload() / 1_000_000
+        ping = st.results.ping
+        await msg.edit(f"⚡ **සර්වර් වේගය:**\n\n⬇️ Download: {d_speed:.2f} Mbps\n⬆️ Upload: {u_speed:.2f} Mbps\n📡 Ping: {ping} ms")
+    except Exception as e:
+        await msg.edit(f"Speed Test Error: {e}")
 
-# --- 3. DOWNLOADER ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     if len(message.command) < 2:
         await message.reply("ලින්ක් එකක් එවන්න!")
         return
     url = message.text.split(None, 1)[1]
-    fn = url.split("/")[-1].split("?")[0] or "file"
+    fn = url.split("/")[-1].split("?")[0] or "file_download"
     s_msg = await message.reply("සම්බන්ධ වෙමින්... 🔍")
+    
     try:
-        h = requests.head(url, allow_redirects=True)
+        h = requests.head(url, allow_redirects=True, headers=headers)
         size = int(h.headers.get('content-length', 0))
         limit = 1900 * 1024 * 1024 
         
         if size < limit:
-            r = requests.get(url, stream=True)
+            r = requests.get(url, stream=True, headers=headers)
             with open(fn, 'wb') as f:
                 dl = 0
                 for chunk in r.iter_content(chunk_size=1024*1024):
                     if chunk:
                         f.write(chunk)
                         dl += len(chunk)
-                        if size > 0 and dl % (30*1024*1024) < (1024*1024):
+                        if size > 0 and dl % (50*1024*1024) < (1024*1024):
                             await progress(dl, size, s_msg, "බාගත වෙමින්")
             await s_msg.edit("අප්ලෝඩ් කරමින්... 📤")
             await client.send_document(message.chat.id, document=fn, progress=progress, progress_args=(s_msg, "අප්ලෝඩ් වෙමින්"))
@@ -95,8 +84,8 @@ async def dl_handler(client, message):
             while start_byte < size:
                 end_byte = min(start_byte + limit - 1, size - 1)
                 part_fn = f"Part_{part_num}_{fn}"
-                headers = {'Range': f'bytes={start_byte}-{end_byte}'}
-                r = requests.get(url, headers=headers, stream=True)
+                headers_range = {'Range': f'bytes={start_byte}-{end_byte}', **headers}
+                r = requests.get(url, headers=headers_range, stream=True)
                 with open(part_fn, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=1024*1024):
                         if chunk: f.write(chunk)
