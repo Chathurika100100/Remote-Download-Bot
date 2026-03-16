@@ -1,19 +1,19 @@
 import os
 import requests
 import threading
-import speedtest
+import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# Server එක දිගටම පණගන්වා තැබීමට Flask App එක
+# සර්වර් එක Online තබා ගැනීමට
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot is Online - Simple Speed & Download!"
+def home(): return "Bot is Online - Fully Fixed Version!"
 
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# ප්‍රගතිය පෙන්වන Function එක (Progress Bar)
+# ප්‍රගතිය පෙන්වන Function එක
 async def progress(current, total, message, type_msg):
     percent = current * 100 / total
     if int(percent) % 15 == 0:
@@ -27,31 +27,29 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 1. SPEED TEST (Download, Upload & Ping - Text Only) ---
+# --- 1. SPEED TEST (No Error Method) ---
 @app.on_message(filters.command("speed") & filters.private)
 async def test_speed(client, message):
-    msg = await message.reply("වේගය පරීක්ෂා කරමින්... 🚀")
+    msg = await message.reply("සර්වර් වේගය පරීක්ෂා කරමින්... 🚀")
     try:
-        st = speedtest.Speedtest()
-        st.get_best_server()
+        # 100MB ෆයිල් එකක් පාවිච්චි කරලා වේගය මැනීම
+        url = "https://speed.hetzner.de/100MB.bin"
+        start_t = time.time()
+        r = requests.get(url, timeout=30)
+        end_t = time.time()
         
-        # වේගය ගණනය කිරීම
-        d_speed = st.download() / 1_000_000
-        u_speed = st.upload() / 1_000_000
-        ping = st.results.ping
+        duration = end_t - start_t
+        mbps = (100 * 8) / duration # Megabits per second
         
-        await msg.edit(f"⚡ **සර්වර් වේගය පරීක්ෂාව:**\n\n"
-                       f"⬇️ Download: {d_speed:.2f} Mbps\n"
-                       f"⬆️ Upload: {u_speed:.2f} Mbps\n"
-                       f"📡 Ping: {ping} ms")
+        await msg.edit(f"⚡ **සර්වර් වේගය (Real-time):**\n\n📊 Download Speed: {mbps:.2f} Mbps\n⏱️ ගතවූ කාලය: {duration:.2f} s")
     except Exception as e:
-        await msg.edit(f"වේගය මැනීමේදී ගැටලුවක් විය: {e}")
+        await msg.edit(f"වේගය බැලීමේදී ගැටලුවක් විය: {e}")
 
-# --- 2. DOWNLOADER (LOKU & PODI FILES) ---
+# --- 2. DOWNLOADER (LOKU & PODI) ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     if len(message.command) < 2:
-        await message.reply("ලින්ක් එකක් එවන්න! උදා: `/download https://...`")
+        await message.reply("ලින්ක් එකක් එවන්න!")
         return
     url = message.text.split(None, 1)[1]
     fn = url.split("/")[-1].split("?")[0] or "file"
@@ -59,9 +57,9 @@ async def dl_handler(client, message):
     try:
         h = requests.head(url, allow_redirects=True)
         size = int(h.headers.get('content-length', 0))
-        limit = 1900 * 1024 * 1024 # 1.9GB කෑලි වලට කඩන සීමාව
+        limit = 1900 * 1024 * 1024 
         
-        if size < limit: # සාමාන්‍ය ෆයිල් එකක් නම්
+        if size < limit: # සාමාන්‍ය ෆයිල්
             r = requests.get(url, stream=True)
             with open(fn, 'wb') as f:
                 dl = 0
@@ -69,12 +67,12 @@ async def dl_handler(client, message):
                     if chunk:
                         f.write(chunk)
                         dl += len(chunk)
-                        if size > 0 and dl % (20*1024*1024) < (1024*1024):
+                        if size > 0 and dl % (30*1024*1024) < (1024*1024):
                             await progress(dl, size, s_msg, "බාගත වෙමින්")
             await s_msg.edit("අප්ලෝඩ් කරමින්... 📤")
             await client.send_document(message.chat.id, document=fn, progress=progress, progress_args=(s_msg, "අප්ලෝඩ් වෙමින්"))
             os.remove(fn)
-        else: # විශාල ෆයිල් එකක් නම් කෑලි වශයෙන් එවන්න
+        else: # ඉතා විශාල ෆයිල් (Parts)
             await s_msg.edit(f"විශාල ෆයිල් එකක් ({(size/1024**3):.2f}GB). කෑලි වශයෙන් එවමි... 📦")
             start_byte = 0
             part_num = 1
@@ -96,7 +94,7 @@ async def dl_handler(client, message):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    await message.reply_text("👋 බොට් සූදානම්!\n\n⚡ /download [link] - ෆයිල් බාගත කිරීමට\n⚡ /speed - සර්වර් වේගය බැලීමට")
+    await message.reply_text("👋 බොට් සූදානම්!\n\n⚡ /download [link]\n⚡ /speed")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
