@@ -4,10 +4,11 @@ import threading
 import random
 import string
 import speedtest
+import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# Server එක පණගන්වා තැබීමට
+# සර්වර් එක දිගටම පණගන්වා තැබීමට Flask App එක
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home(): return "Bot is Online & Fully Fixed!"
@@ -15,7 +16,7 @@ def home(): return "Bot is Online & Fully Fixed!"
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# Progress Bar එක
+# ප්‍රගතිය පෙන්වන Function එක
 async def progress(current, total, message, type_msg):
     percent = current * 100 / total
     if int(percent) % 15 == 0:
@@ -23,6 +24,7 @@ async def progress(current, total, message, type_msg):
             await message.edit(f"🚀 {type_msg}: {percent:.1f}% \n📦 {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
         except: pass
 
+# පරිසර විචල්‍යයන්
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -47,7 +49,7 @@ async def test_speed(client, message):
     except Exception as e:
         await msg.edit(f"වේගය මැනීමේදී ගැටලුවක් විය: {e}")
 
-# --- 2. TEMP MAIL (FIXED) ---
+# --- 2. TEMP MAIL (STABLE WITH RETRY) ---
 @app.on_message(filters.command("getmail") & filters.private)
 async def get_mail(client, message):
     user = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(10))
@@ -58,18 +60,24 @@ async def check_mail(client, message):
     user = message.text.split("_")[1]
     url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={user}&domain=1secmail.com"
     status_msg = await message.reply("Inbox පරීක්ෂා කරමින්... ⏳")
-    try:
-        response = requests.get(url, timeout=10)
-        res = response.json()
-        if not res:
-            await status_msg.edit("තවම පණිවිඩ ලැබී නැත. විනාඩියක් පමණ රැඳී සිට නැවත බලන්න.")
-        else:
+    
+    for i in range(3): # API එක 3 වතාවක් check කරයි
+        try:
+            response = requests.get(url, timeout=15)
+            res = response.json()
+            if not res:
+                await status_msg.edit("තවම පණිවිඩ ලැබී නැත. (විනාඩියක් විතර ඉඳලා ආයෙත් බලන්න)")
+                return
+            
             m_id = res[0]['id']
             d_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={user}&domain=1secmail.com&id={m_id}"
             d_res = requests.get(d_url).json()
             await status_msg.edit(f"📩 **පණිවිඩයක් ලැබුණා!**\n\n👤 **From:** {res[0]['from']}\n📝 **Sub:** {res[0]['subject']}\n\n📄 **Body:**\n{d_res['textBody'][:1000]}")
-    except:
-        await status_msg.edit("API සම්බන්ධතාවයේ ගැටලුවක්. පසුව උත්සාහ කරන්න.")
+            return
+        except:
+            time.sleep(2)
+            continue
+    await status_msg.edit("API සම්බන්ධතාවයේ ගැටලුවක්. පසුව උත්සාහ කරන්න.")
 
 # --- 3. DOWNLOADER (LOKU & PODI FILES) ---
 @app.on_message(filters.command("download") & filters.private)
@@ -114,7 +122,7 @@ async def dl_handler(client, message):
                 os.remove(part_fn)
                 start_byte += limit
                 part_num += 1
-        await s_msg.edit("වැඩේ ඉවරයි! ✅")
+        await s_msg.edit("වැඩේ සම්පූර්ණයි! ✅")
     except Exception as e:
         await s_msg.edit(f"Error: {e}")
 
