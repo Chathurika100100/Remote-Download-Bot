@@ -1,22 +1,19 @@
 import os
 import requests
 import threading
-import random
-import string
 import speedtest
-import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# සර්වර් එක දිගටම පණගන්වා තැබීමට Flask App එක
+# Server එක දිගටම පණගන්වා තැබීමට Flask App එක
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot is Online & Fully Fixed!"
+def home(): return "Bot is Online - Simple Speed & Download!"
 
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# ප්‍රගතිය පෙන්වන Function එක
+# ප්‍රගතිය පෙන්වන Function එක (Progress Bar)
 async def progress(current, total, message, type_msg):
     percent = current * 100 / total
     if int(percent) % 15 == 0:
@@ -24,66 +21,37 @@ async def progress(current, total, message, type_msg):
             await message.edit(f"🚀 {type_msg}: {percent:.1f}% \n📦 {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
         except: pass
 
-# පරිසර විචල්‍යයන්
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 1. SPEED TEST WITH IMAGE ---
+# --- 1. SPEED TEST (Download, Upload & Ping - Text Only) ---
 @app.on_message(filters.command("speed") & filters.private)
 async def test_speed(client, message):
-    msg = await message.reply("වේගය පරීක්ෂා කරමින්... පින්තූරය සකසමින් පවතී 🚀")
+    msg = await message.reply("වේගය පරීක්ෂා කරමින්... 🚀")
     try:
         st = speedtest.Speedtest()
         st.get_best_server()
-        st.download()
-        st.upload()
-        res = st.results.dict()
-        image_url = res['share']
-        caption = (f"⚡ **සර්වර් වේගය:**\n\n⬇️ Download: {res['download']/1_000_000:.2f} Mbps\n"
-                   f"⬆️ Upload: {res['upload']/1_000_000:.2f} Mbps\n📡 Ping: {res['ping']} ms")
-        await message.reply_photo(photo=image_url, caption=caption)
-        await msg.delete()
+        
+        # වේගය ගණනය කිරීම
+        d_speed = st.download() / 1_000_000
+        u_speed = st.upload() / 1_000_000
+        ping = st.results.ping
+        
+        await msg.edit(f"⚡ **සර්වර් වේගය පරීක්ෂාව:**\n\n"
+                       f"⬇️ Download: {d_speed:.2f} Mbps\n"
+                       f"⬆️ Upload: {u_speed:.2f} Mbps\n"
+                       f"📡 Ping: {ping} ms")
     except Exception as e:
         await msg.edit(f"වේගය මැනීමේදී ගැටලුවක් විය: {e}")
 
-# --- 2. TEMP MAIL (STABLE WITH RETRY) ---
-@app.on_message(filters.command("getmail") & filters.private)
-async def get_mail(client, message):
-    user = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(10))
-    await message.reply_text(f"📧 **ඔයාගේ Temp Mail එක:**\n`{user}@1secmail.com`\n\n📥 Inbox බලන්න:\n/check_{user}")
-
-@app.on_message(filters.regex("^/check_") & filters.private)
-async def check_mail(client, message):
-    user = message.text.split("_")[1]
-    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={user}&domain=1secmail.com"
-    status_msg = await message.reply("Inbox පරීක්ෂා කරමින්... ⏳")
-    
-    for i in range(3): # API එක 3 වතාවක් check කරයි
-        try:
-            response = requests.get(url, timeout=15)
-            res = response.json()
-            if not res:
-                await status_msg.edit("තවම පණිවිඩ ලැබී නැත. (විනාඩියක් විතර ඉඳලා ආයෙත් බලන්න)")
-                return
-            
-            m_id = res[0]['id']
-            d_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={user}&domain=1secmail.com&id={m_id}"
-            d_res = requests.get(d_url).json()
-            await status_msg.edit(f"📩 **පණිවිඩයක් ලැබුණා!**\n\n👤 **From:** {res[0]['from']}\n📝 **Sub:** {res[0]['subject']}\n\n📄 **Body:**\n{d_res['textBody'][:1000]}")
-            return
-        except:
-            time.sleep(2)
-            continue
-    await status_msg.edit("API සම්බන්ධතාවයේ ගැටලුවක්. පසුව උත්සාහ කරන්න.")
-
-# --- 3. DOWNLOADER (LOKU & PODI FILES) ---
+# --- 2. DOWNLOADER (LOKU & PODI FILES) ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     if len(message.command) < 2:
-        await message.reply("Link එකක් එවන්න!")
+        await message.reply("ලින්ක් එකක් එවන්න! උදා: `/download https://...`")
         return
     url = message.text.split(None, 1)[1]
     fn = url.split("/")[-1].split("?")[0] or "file"
@@ -91,9 +59,9 @@ async def dl_handler(client, message):
     try:
         h = requests.head(url, allow_redirects=True)
         size = int(h.headers.get('content-length', 0))
-        limit = 1900 * 1024 * 1024 
+        limit = 1900 * 1024 * 1024 # 1.9GB කෑලි වලට කඩන සීමාව
         
-        if size < limit: # සාමාන්‍ය ෆයිල්
+        if size < limit: # සාමාන්‍ය ෆයිල් එකක් නම්
             r = requests.get(url, stream=True)
             with open(fn, 'wb') as f:
                 dl = 0
@@ -106,7 +74,7 @@ async def dl_handler(client, message):
             await s_msg.edit("අප්ලෝඩ් කරමින්... 📤")
             await client.send_document(message.chat.id, document=fn, progress=progress, progress_args=(s_msg, "අප්ලෝඩ් වෙමින්"))
             os.remove(fn)
-        else: # විශාල ෆයිල් (කෑලි වලට කඩන කොටස)
+        else: # විශාල ෆයිල් එකක් නම් කෑලි වශයෙන් එවන්න
             await s_msg.edit(f"විශාල ෆයිල් එකක් ({(size/1024**3):.2f}GB). කෑලි වශයෙන් එවමි... 📦")
             start_byte = 0
             part_num = 1
@@ -128,7 +96,7 @@ async def dl_handler(client, message):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    await message.reply_text("👋 මම වැඩ!\n⚡ /getmail | ⚡ /speed | ⚡ /download")
+    await message.reply_text("👋 බොට් සූදානම්!\n\n⚡ /download [link] - ෆයිල් බාගත කිරීමට\n⚡ /speed - සර්වර් වේගය බැලීමට")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
