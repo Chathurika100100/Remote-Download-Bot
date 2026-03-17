@@ -6,15 +6,15 @@ import time
 from flask import Flask
 from pyrogram import Client, filters
 
-# Server එක Online තබා ගැනීමට
+# 1. සර්වර් එක Online තබා ගැනීමට Flask App එක
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot is Online - Fully Fixed Version!"
+def home(): return "Bot is Online - Full Stable Version!"
 
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# Progress Bar
+# 2. Progress Bar එක (බාගත වන ප්‍රමාණය පෙන්වීමට)
 async def progress(current, total, message, type_msg):
     percent = current * 100 / total
     if int(percent) % 15 == 0:
@@ -22,20 +22,28 @@ async def progress(current, total, message, type_msg):
             await message.edit(f"🚀 {type_msg}: {percent:.1f}% \n📦 {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
         except: pass
 
+# Env Variables (Koyeb එකේ දාපු ඒවා)
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Headers (Browser එකක් ලෙස පෙනී සිටීමට - 196B error එක වැළැක්වීමට)
+# Headers (Browser එකක් ලෙස පෙන්වීමට - 196B error එක වැළැක්වීමට)
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
+# --- COMMANDS ---
+
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    await message.reply_text("👋 ආයුබෝවන් ප්‍රවීන්!\n\n/download [link] එවන්න.\n/speed මගින් වේගය බලන්න.")
+    await message.reply_text(
+        "👋 **ආයුබෝවන් ප්‍රවීන්!**\n\n"
+        "මම ඔයාගේ Remote Download Bot. මට පුළුවන් ඕනෑම ලින්ක් එකක් කෙලින්ම ටෙලිග්‍රෑම් එකට එවන්න.\n\n"
+        "⚡ /download [link] - ෆයිල් බාගත කිරීමට\n"
+        "⚡ /speed - සර්වර් වේගය පරීක්ෂා කිරීමට"
+    )
 
 @app.on_message(filters.command("speed") & filters.private)
 async def test_speed(client, message):
@@ -46,25 +54,35 @@ async def test_speed(client, message):
         d_speed = st.download() / 1_000_000
         u_speed = st.upload() / 1_000_000
         ping = st.results.ping
-        await msg.edit(f"⚡ **සර්වර් වේගය:**\n\n⬇️ Download: {d_speed:.2f} Mbps\n⬆️ Upload: {u_speed:.2f} Mbps\n📡 Ping: {ping} ms")
+        
+        await msg.edit(f"⚡ **සර්වර් වේගය:**\n\n"
+                       f"⬇️ Download: {d_speed:.2f} Mbps\n"
+                       f"⬆️ Upload: {u_speed:.2f} Mbps\n"
+                       f"📡 Ping: {ping} ms")
     except Exception as e:
-        await msg.edit(f"Speed Test Error: {e}")
+        await msg.edit(f"Speed Test Error: {e}\n(පසුව උත්සාහ කරන්න)")
 
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     if len(message.command) < 2:
         await message.reply("ලින්ක් එකක් එවන්න!")
         return
+    
     url = message.text.split(None, 1)[1]
     fn = url.split("/")[-1].split("?")[0] or "file_download"
     s_msg = await message.reply("සම්බන්ධ වෙමින්... 🔍")
     
     try:
+        # Headers සමඟ File Size එක පරීක්ෂා කිරීම
         h = requests.head(url, allow_redirects=True, headers=headers)
         size = int(h.headers.get('content-length', 0))
-        limit = 1900 * 1024 * 1024 
+        limit = 1900 * 1024 * 1024 # Telegram 2GB Limit
         
-        if size < limit:
+        if size < 500:
+            await s_msg.edit("❌ මේක Direct Link එකක් නෙවෙයි වගෙයි. මට බාන්න බැහැ.")
+            return
+
+        if size < limit: # සාමාන්‍ය ෆයිල් (2GB ට අඩු)
             r = requests.get(url, stream=True, headers=headers)
             with open(fn, 'wb') as f:
                 dl = 0
@@ -72,31 +90,36 @@ async def dl_handler(client, message):
                     if chunk:
                         f.write(chunk)
                         dl += len(chunk)
-                        if size > 0 and dl % (50*1024*1024) < (1024*1024):
+                        if size > 0 and dl % (30*1024*1024) < (1024*1024):
                             await progress(dl, size, s_msg, "බාගත වෙමින්")
+            
             await s_msg.edit("අප්ලෝඩ් කරමින්... 📤")
             await client.send_document(message.chat.id, document=fn, progress=progress, progress_args=(s_msg, "අප්ලෝඩ් වෙමින්"))
             os.remove(fn)
-        else:
+        
+        else: # විශාල ෆයිල් (2GB ට වැඩි නම් කෑලි වලට කඩනවා)
             await s_msg.edit(f"විශාල ෆයිල් එකක් ({(size/1024**3):.2f}GB). කෑලි වශයෙන් එවමි... 📦")
             start_byte = 0
             part_num = 1
             while start_byte < size:
                 end_byte = min(start_byte + limit - 1, size - 1)
                 part_fn = f"Part_{part_num}_{fn}"
-                headers_range = {'Range': f'bytes={start_byte}-{end_byte}', **headers}
-                r = requests.get(url, headers=headers_range, stream=True)
+                range_header = {'Range': f'bytes={start_byte}-{end_byte}', **headers}
+                r = requests.get(url, headers=range_header, stream=True)
                 with open(part_fn, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=1024*1024):
                         if chunk: f.write(chunk)
+                
                 await client.send_document(message.chat.id, document=part_fn)
                 os.remove(part_fn)
                 start_byte += limit
                 part_num += 1
+        
         await s_msg.edit("වැඩේ සම්පූර්ණයි! ✅")
     except Exception as e:
         await s_msg.edit(f"Error: {e}")
 
 if __name__ == "__main__":
+    # Flask සර්වර් එක Background එකේ පණගැන්වීම
     threading.Thread(target=run_flask, daemon=True).start()
     app.run()
