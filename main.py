@@ -3,46 +3,45 @@ import requests
 import threading
 import speedtest
 import time
+import re
 from flask import Flask
 from pyrogram import Client, filters
 
-# 1. සර්වර් එක දිගටම පණගැන්වීමට (Koyeb/Heroku සඳහා)
+# --- සර්වර් එක Online තබා ගැනීමට (Koyeb/Heroku) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "බොට් වැඩ කරයි! 🚀"
+def home(): return "Bot is Online! 🚀"
 
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# 2. Progress Bar එක (බාගත වන ප්‍රමාණය පෙන්වීමට)
+# --- Progress Bar එක ---
 async def progress(current, total, message, type_msg):
     if total <= 0: return
     percent = current * 100 / total
-    if int(percent) % 15 == 0: # හැම 15% කටම වරක් update වේ
+    if int(percent) % 15 == 0:
         try:
             await message.edit(f"🚀 {type_msg}: {percent:.1f}% \n📦 {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
         except: pass
 
-# Environment Variables (Koyeb settings වල ලබා දිය යුතුය)
+# --- Configurations ---
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-app = Client("remote_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("my_remote_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Browser එකක් ලෙස පෙනී සිටීමට Headers (Direct Link ප්‍රශ්නය විසඳීමට මෙය වැදගත් වේ)
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-    'Accept': '*/*'
+# Browser එකක් ලෙස පෙනී සිටීමට Headers (Direct Link ප්‍රශ්නය මෙයින් විසඳේ)
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
 }
 
-# --- COMMANDS ---
+# --- බොට්ගේ වැඩකටයුතු ---
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     await message.reply_text(
-        "👋 **ආයුබෝවන් ප්‍රවීන්!**\n\n"
-        "මම ඔයාගේ Remote Download Bot. මට පුළුවන් ඕනෑම ලින්ක් එකක් කෙලින්ම ටෙලිග්‍රෑම් එකට එවන්න.\n\n"
+        "👋 **ආයුබෝවන් ප්‍රවීන්!**\n\nමම ඔයාගේ Remote Bot. මට පුළුවන් ඕනෑම ලින්ක් එකක් ටෙලිග්‍රෑම් එකට එවන්න.\n\n"
         "⚡ /download [link] - ෆයිල් බාගත කිරීමට\n"
         "⚡ /speed - සර්වර් වේගය පරීක්ෂා කිරීමට"
     )
@@ -55,67 +54,83 @@ async def test_speed(client, message):
         st.get_best_server()
         d_speed = st.download() / 1_000_000
         u_speed = st.upload() / 1_000_000
-        await msg.edit(f"⚡ **සර්වර් වේගය:**\n\n⬇️ Download: {d_speed:.2f} Mbps\n⬆️ Upload: {u_speed:.2f} Mbps")
+        await msg.edit(f"⚡ **Server Speed:**\n\n⬇️ Down: {d_speed:.2f} Mbps\n⬆️ Up: {u_speed:.2f} Mbps")
     except Exception as e:
         await msg.edit(f"Speed Test Error: {e}")
 
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     if len(message.command) < 2:
-        await message.reply("ලින්ක් එකක් එවන්න! උදා: `/download https://site.com/video.mp4`")
+        await message.reply("ලින්ක් එකක් එවන්න!")
         return
     
     url = message.text.split(None, 1)[1]
-    fn = url.split("/")[-1].split("?")[0] or f"file_{int(time.time())}.dat"
     s_msg = await message.reply("සම්බන්ධ වෙමින්... 🔍")
     
     try:
-        # ලින්ක් එක Stream එකක් ලෙස ලබා ගැනීම
-        with requests.get(url, headers=headers, stream=True, timeout=30) as r:
+        # 1. ලින්ක් එක පරීක්ෂා කර ඇත්තම නම (Filename) සොයා ගැනීම
+        with requests.get(url, headers=HEADERS, stream=True, timeout=20) as r:
             r.raise_for_status()
-            size = int(r.headers.get('content-length', 0))
-            limit = 1990 * 1024 * 1024 # 2GB limit (ටෙලිග්‍රෑම් සීමාව)
             
-            # ලින්ක් එක වෙබ් පිටුවක්ද (HTML) නැත්නම් Direct File එකක්ද කියා බලයි
-            ctype = r.headers.get('Content-Type', '')
-            if 'text/html' in ctype and size < 200000:
+            # Content-Disposition එකෙන් නම බැලීම (FitGirl වගේ සයිට් වලට වැදගත් වේ)
+            cd = r.headers.get('content-disposition')
+            if cd and 'filename=' in cd:
+                fn = re.findall('filename=(.+)', cd)[0].replace('"', '').replace("'", "")
+            else:
+                fn = url.split("/")[-1].split("?")[0] or f"file_{int(time.time())}.zip"
+
+            size = int(r.headers.get('content-length', 0))
+            limit = 1990 * 1024 * 1024  # 2GB Limit
+            
+            # වෙබ් පිටුවක්ද කියා පරීක්ෂා කිරීම
+            if 'text/html' in r.headers.get('Content-Type', '') and size < 100000:
                 await s_msg.edit("❌ මේක Direct Link එකක් නෙවෙයි. මට බාන්න බැහැ.")
                 return
 
-            await s_msg.edit(f"බාගත වෙමින් පවතී... 📥\nසයිස් එක: {(size/1024**2):.2f} MB")
+            await s_msg.edit(f"බාගත වෙමින්: `{fn}`\nසයිස් එක: {(size/1024**2):.2f} MB")
 
-            # ෆයිල් එක සර්වර් එකේ තාවකාලිකව Save කිරීම
-            with open(fn, 'wb') as f:
-                dl = 0
-                for chunk in r.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        f.write(chunk)
-                        dl += len(chunk)
-                        if dl % (40*1024*1024) < (1024*1024): # හැම 40MB කටම වරක් progress පෙන්වයි
-                            try: await progress(dl, size if size > 0 else dl, s_msg, "Downloading")
-                            except: pass
-
-            if size > limit:
-                await s_msg.edit("⚠️ ෆයිල් එක 2GB ට වැඩියි. ටෙලිග්‍රෑම් සාමාන්‍ය බොට් කෙනෙක්ට මේක එවන්න බැහැ.")
+            # 2. ෆයිල් එක බාගත කිරීම (2GB ට වැඩි නම් කෑලි වලට කඩයි)
+            if size <= limit:
+                # සාමාන්‍ය ෆයිල් (එකම කෑල්ලයි)
+                with open(fn, 'wb') as f:
+                    dl = 0
+                    for chunk in r.iter_content(chunk_size=1024*1024):
+                        if chunk:
+                            f.write(chunk)
+                            dl += len(chunk)
+                            if dl % (40*1024*1024) < (1024*1024):
+                                try: await progress(dl, size, s_msg, "Downloading")
+                                except: pass
+                
+                await s_msg.edit(f"අප්ලෝඩ් කරමින්: `{fn}`...")
+                await client.send_document(message.chat.id, document=fn, caption=f"✅ `{fn}`")
                 os.remove(fn)
-                return
+            
+            else:
+                # ලොකු ෆයිල් - කෑලි වලට (Parts) බෙදීම
+                await s_msg.edit(f"විශාල ෆයිල් එකක් ({(size/1024**3):.2f}GB). කෑලි වශයෙන් එවමි... 📦")
+                start_byte = 0
+                part_num = 1
+                while start_byte < size:
+                    end_byte = min(start_byte + limit - 1, size - 1)
+                    part_fn = f"Part_{part_num}_{fn}"
+                    range_header = {'Range': f'bytes={start_byte}-{end_byte}', **HEADERS}
+                    
+                    with requests.get(url, headers=range_header, stream=True) as part_r:
+                        with open(part_fn, 'wb') as f:
+                            for chunk in part_r.iter_content(chunk_size=1024*1024):
+                                if chunk: f.write(chunk)
+                    
+                    await client.send_document(message.chat.id, document=part_fn, caption=f"📦 {part_fn}")
+                    os.remove(part_fn)
+                    start_byte += limit
+                    part_num += 1
 
-            await s_msg.edit("ටෙලිග්‍රෑම් එකට අප්ලෝඩ් කරමින්... 📤")
-            await client.send_document(
-                message.chat.id, 
-                document=fn, 
-                caption=f"✅ `{fn}`",
-                progress=progress, 
-                progress_args=(s_msg, "Uploading")
-            )
-            os.remove(fn)
             await s_msg.delete()
 
     except Exception as e:
-        if os.path.exists(fn): os.remove(fn)
-        await s_msg.edit(f"❌ **දෝෂය:** `{str(e)}` \n(ලින්ක් එකේ ඇති අකුරු වැරදිදැයි බලන්න)")
+        await s_msg.edit(f"❌ Error: {str(e)}")
 
 if __name__ == "__main__":
-    # Flask සර්වර් එක වෙනම thread එකක දුවවයි
     threading.Thread(target=run_flask, daemon=True).start()
     app.run()
