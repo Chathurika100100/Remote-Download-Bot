@@ -3,3 +3,5 @@ tgcrypto
 requests
 flask
 speedtest-cli
+import gdown
+import shutil
