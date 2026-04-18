@@ -3,4 +3,3 @@ tgcrypto
 requests
 flask
 speedtest-cli
-gdown
