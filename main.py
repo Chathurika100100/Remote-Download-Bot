@@ -13,7 +13,7 @@ from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- Keep-Alive Server ---
+# --- සර්වර් එක Online තබා ගැනීමට (Flask) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home(): return "Remote Download Bot is Active! 🚀"
@@ -27,8 +27,8 @@ last_update_time = 0
 user_temp_data = {}
 
 # Settings
-MAX_SINGLE_SIZE = 1.2 * 1024 * 1024 * 1024  # 1.2 GB
-PART_SIZE = 500 * 1024 * 1024               # 500 MB Split Part
+MAX_SINGLE_SIZE = 1.2 * 1024 * 1024 * 1024  # 1.2 GB (මේකට වඩා ලොකු නම් split වේ)
+PART_SIZE = 500 * 1024 * 1024               # Split කරන කෑල්ලක සයිස් එක (500MB)
 
 # --- Helper Functions ---
 def generate_random_string(length=10):
@@ -61,22 +61,30 @@ def check_inbox_api(token):
         return detailed_messages
     return []
 
+# --- Progress Bar (Downloading සහ Uploading දෙකටම වැඩ) ---
 async def progress(current, total, message, type_msg, fn):
     global last_update_time, is_stopped
-    if is_stopped: raise Exception("STOPPED_BY_USER")
+    if is_stopped:
+        raise Exception("STOPPED_BY_USER")
+        
     now = time.time()
-    if now - last_update_time < 4 and current != total: return
+    if now - last_update_time < 4 and current != total:
+        return
+        
     last_update_time = now
     if total <= 0: return
+    
     percent = current * 100 / total
     progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
+    
     try:
         await message.edit(
             f"**{type_msg}:** `{fn}`\n"
             f"📊 `{progress_bar}` **{percent:.1f}%**\n"
             f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
         )
-    except: pass
+    except:
+        pass
 
 # --- Configurations ---
 API_ID = os.environ.get("API_ID")
@@ -100,8 +108,6 @@ def get_filename(url, headers):
 async def start(client, message):
     start_text = (
         "👋 **ආයුබෝවන් ප්‍රවීන්! මම Remote Download බොට්.**\n\n"
-        "ඔබට ඕනෑම Direct ලින්ක් එකක් හෝ Google Drive ලින්ක් එකක් මගින් "
-        "ෆයිල් ටෙලිග්‍රෑම් වෙත බාගත කර ගැනීමට මම උදව් කරන්නම්.\n\n"
         "📜 **ප්‍රධාන විධානයන් (Commands):**\n"
         "🚀 `/download [links]` - ලින්ක් එකක් හෝ කිහිපයක් බාගත කිරීමට\n"
         "⚡ `/speed` - සර්වර් එකේ වේගය පරීක්ෂා කිරීමට\n"
@@ -117,22 +123,21 @@ async def test_speed(client, message):
     try:
         st = speedtest.Speedtest(secure=True)
         st.get_best_server()
-        await msg.edit(f"🚀 **Download:** `{st.download()/1e6:.2f} Mbps` \n🚀 **Upload:** `{st.upload()/1e6:.2f} Mbps` \n📡 **Ping:** `{st.results.ping:.2f} ms`")
+        await msg.edit(f"🚀 **DL:** `{st.download()/1e6:.2f} Mbps` | **UP:** `{st.upload()/1e6:.2f} Mbps` | **Ping:** `{st.results.ping:.2f} ms`")
     except Exception as e: await msg.edit(f"❌ Error: {e}")
 
 @app.on_message(filters.command("stop") & filters.private)
 async def stop_h(client, message):
     global is_stopped
     is_stopped = True
-    await message.reply("🛑 දැනට පවතින සියලුම වැඩ නවතා දැමුවා!")
+    await message.reply("🛑 Stopped! සියලු වැඩ නැවැත්තුවා.")
 
 @app.on_message(filters.command("tempmail") & filters.private)
 async def get_temp(client, message):
     email, token = create_mail()
     if email:
         user_temp_data[message.chat.id] = {"email": email, "token": token}
-        await message.reply(f"📧 ඔබේ තාවකාලික ඊමේල් ලිපිනය:\n`{email}`", 
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Inbox පරීක්ෂා කරන්න", callback_data="check_inbox")]]))
+        await message.reply(f"📧 `{email}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Inbox", callback_data="check_inbox")]]))
 
 @app.on_callback_query(filters.regex("^check_inbox$"))
 async def check_inbox_callback(client, callback_query):
@@ -140,7 +145,7 @@ async def check_inbox_callback(client, callback_query):
     if not data: return
     messages = check_inbox_api(data["token"])
     text = f"✅ `{data['email']}`\n\n"
-    if not messages: text += "Inbox එක තවමත් හිස්."
+    if not messages: text += "Inbox එක හිස්."
     for msg in messages: text += f"👤 From: {msg['from']['address']}\n📝 {msg['subject']}\n📄 {msg.get('text','')[:500]}\n---\n"
     await callback_query.message.edit_text(text, reply_markup=callback_query.message.reply_markup)
 
@@ -149,27 +154,20 @@ async def check_inbox_callback(client, callback_query):
 async def dl_handler(client, message):
     global is_stopped
     is_stopped = False
-    
-    # ලින්ක් කිහිපයක් තිබේ නම් ඒවා වෙන් කර ගැනීම
     input_text = message.text.split()
-    if len(input_text) < 2:
-        return await message.reply("❌ කරුණාකර ලින්ක් එකක් හෝ කිහිපයක් ලබා දෙන්න.\nභාවිතය: `/download link1 link2`")
+    if len(input_text) < 2: return await message.reply("❌ කරුණාකර ලින්ක් එකක් ලබා දෙන්න.")
     
     links = input_text[1:]
-    total_links = len(links)
-    await message.reply(f"🔗 ලින්ක් {total_links} ක් පෝලිමට එකතු කළා. පිළිවෙලින් බාගත කිරීම ආරම්භ කරනවා...")
-
     for i, link in enumerate(links, 1):
         if is_stopped: break
-        s_msg = await message.reply(f"⏳ ({i}/{total_links}) සම්බන්ධ වෙමින්: `{link}`")
+        s_msg = await message.reply(f"⏳ ({i}/{len(links)}) සම්බන්ධ වෙමින්...")
         
         try:
             # --- Google Drive Link Handling ---
             if "drive.google.com" in link:
                 folder_name = f"gdrive_{int(time.time())}"
                 os.makedirs(folder_name, exist_ok=True)
-                await s_msg.edit(f"📂 ({i}/{total_links}) Google Drive වෙතින් බාගත කරමින්...")
-                
+                await s_msg.edit(f"📂 GDrive බාගත කරමින්...")
                 if "/folder/" in link or "drive/folders/" in link:
                     gdown.download_folder(url=link, output=folder_name, quiet=True)
                 else:
@@ -177,7 +175,15 @@ async def dl_handler(client, message):
 
                 zip_path = shutil.make_archive(folder_name, 'zip', folder_name)
                 fn = os.path.basename(zip_path)
-                await client.send_document(message.chat.id, document=fn, caption=f"✅ `{fn}` බාගත කර අවසන්.")
+                
+                # Uploading GDrive Zip with Progress
+                await client.send_document(
+                    message.chat.id, 
+                    document=fn, 
+                    caption=f"✅ `{fn}` (GDrive)", 
+                    progress=progress, 
+                    progress_args=(s_msg, "📤 Uploading", fn)
+                )
                 if os.path.exists(fn): os.remove(fn)
                 shutil.rmtree(folder_name)
             
@@ -190,8 +196,6 @@ async def dl_handler(client, message):
                     
                     # 1.2GB ට වඩා වැඩි නම් SPLIT කරනවා
                     if total_size > MAX_SINGLE_SIZE:
-                        await s_msg.edit(f"📦 ෆයිල් එක විශාලයි ({(total_size/MAX_SINGLE_SIZE):.1f}GB). කොටස් වලට බෙදා එවනු ලැබේ...")
-                        
                         part_num = 1
                         downloaded_total = 0
                         while downloaded_total < total_size:
@@ -207,8 +211,14 @@ async def dl_handler(client, message):
                                     await progress(downloaded_total, total_size, s_msg, f"📥 Part {part_num} බාමින්", fn)
                                     if current_part_size >= PART_SIZE: break
                             
-                            await s_msg.edit(f"📤 Part {part_num} ටෙලිග්‍රෑම් වෙත යවමින්...")
-                            await client.send_document(message.chat.id, document=part_fn, caption=f"📦 Part {part_num} - `{fn}`")
+                            # Upload Part with Progress
+                            await client.send_document(
+                                message.chat.id, 
+                                document=part_fn, 
+                                caption=f"📦 Part {part_num} - `{fn}`",
+                                progress=progress, 
+                                progress_args=(s_msg, "📤 Uploading", part_fn)
+                            )
                             if os.path.exists(part_fn): os.remove(part_fn)
                             part_num += 1
                     
@@ -220,14 +230,19 @@ async def dl_handler(client, message):
                                 if is_stopped: break
                                 f.write(chunk)
                                 dl += len(chunk)
-                                await progress(dl, total_size, s_msg, f"📥 ({i}/{total_links}) බාගත කරමින්", fn)
+                                await progress(dl, total_size, s_msg, "📥 Downloading", fn)
                         
-                        await s_msg.edit(f"📤 ටෙලිග්‍රෑම් වෙත යවමින්: `{fn}`")
-                        await client.send_document(message.chat.id, document=fn, caption=f"✅ `{fn}` බාගත කර අවසන්.")
+                        # Normal Upload with Progress
+                        await client.send_document(
+                            message.chat.id, 
+                            document=fn, 
+                            caption=f"✅ `{fn}`", 
+                            progress=progress, 
+                            progress_args=(s_msg, "📤 Uploading", fn)
+                        )
                         if os.path.exists(fn): os.remove(fn)
 
             await s_msg.delete()
-
         except Exception as e:
             if str(e) == "STOPPED_BY_USER":
                 await s_msg.edit("🛑 වැඩය නතර කළා!")
@@ -235,8 +250,7 @@ async def dl_handler(client, message):
             else:
                 await s_msg.edit(f"❌ Error: {str(e)}")
 
-    if not is_stopped:
-        await message.reply(f"✅ පෝලිමේ තිබූ ලින්ක් {total_links} ම බාගත කර අවසන් කළා!")
+    if not is_stopped: await message.reply("✅ පෝලිමේ තිබූ සියලුම ලින්ක් බාගත කර අවසන්!")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
