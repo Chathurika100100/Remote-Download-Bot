@@ -6,6 +6,7 @@ import time
 import re
 import random
 import string
+import math
 from urllib.parse import unquote
 from flask import Flask
 from pyrogram import Client, filters
@@ -22,7 +23,8 @@ def run_flask():
 # --- Global Variables ---
 is_stopped = False
 last_update_time = 0
-user_temp_data = {} # Temp Mail දත්ත තාවකාලිකව තබා ගැනීමට
+user_temp_data = {} 
+CHUNK_SIZE = 1900 * 1024 * 1024  # 1.9GB (ටෙලිග්‍රෑම් ලිමිට් එකට අඩුවෙන්)
 
 # --- Temp Mail Functions ---
 def generate_random_string(length=10):
@@ -34,15 +36,12 @@ def create_mail():
         domain = domain_res['hydra:member'][0]['domain']
         email = f"{generate_random_string()}@{domain}"
         password = "password123"
-        
         data = {"address": email, "password": password}
         res = requests.post("https://api.mail.tm/accounts", json=data)
-        
         if res.status_code == 201:
             token_res = requests.post("https://api.mail.tm/token", json=data).json()
             return email, token_res['token']
-    except:
-        pass
+    except: pass
     return None, None
 
 def check_inbox_api(token):
@@ -51,7 +50,6 @@ def check_inbox_api(token):
     if res.status_code == 200:
         msgs = res.json().get('hydra:member', [])
         detailed_messages = []
-        # අලුත්ම මැසේජ් 3ක ඇතුළත විස්තර (Body) ලබා ගැනීම
         for m in msgs[:3]:
             m_id = m['id']
             m_res = requests.get(f"https://api.mail.tm/messages/{m_id}", headers=headers).json()
@@ -62,46 +60,43 @@ def check_inbox_api(token):
 # --- Progress Bar Function ---
 async def progress(current, total, message, type_msg, fn):
     global last_update_time, is_stopped
-    if is_stopped:
-        raise Exception("STOPPED_BY_USER")
-        
+    if is_stopped: raise Exception("STOPPED_BY_USER")
     now = time.time()
-    if now - last_update_time < 4 and current != total:
-        return
-        
+    if now - last_update_time < 4 and current != total: return
     last_update_time = now
     if total <= 0: return
-    
     percent = current * 100 / total
     progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
-    
     try:
         await message.edit(
             f"**{type_msg}:** `{fn}`\n"
             f"📊 `{progress_bar}` **{percent:.1f}%**\n"
             f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
         )
-    except:
-        pass
+    except: pass
 
 # --- Configurations ---
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-app = Client("remote_mega_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("remote_download_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/115.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 }
 
+# ෆයිල් නමේ තිබෙන දෝෂ (Error) නිවැරදි කරන Function එක
 def get_filename(url, headers):
     cd = headers.get('content-disposition')
     if cd:
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
-        if fname: return unquote(fname[0].strip())
+        if fname: 
+            name = unquote(fname[0].strip())
+            return name.replace("/", "_") # '/' ලකුණ ඉවත් කරයි
     name = url.split("/")[-1].split("?")[0]
-    return unquote(name) if name and "." in name else f"file_{int(time.time())}.zip"
+    name = unquote(name) if name and "." in name else f"file_{int(time.time())}.zip"
+    return name.replace("/", "_")
 
 # ================= COMMANDS =================
 
@@ -115,142 +110,106 @@ async def start(client, message):
         "🛑 `/stop` - දැනට පවතින වැඩ නවත්වන්න"
     )
 
-# --- 1. Speed Test ---
 @app.on_message(filters.command("speed") & filters.private)
 async def test_speed(client, message):
-    msg = await message.reply("⚡ වේගය පරීක්ෂා කරමින් පවතී... කරුණාකර රැඳී සිටින්න.")
+    msg = await message.reply("⚡ වේගය පරීක්ෂා කරමින් පවතී...")
     try:
         st = speedtest.Speedtest(secure=True)
         st.get_best_server()
-        ping = st.results.ping
         await msg.edit(
             f"🚀 **Server Speed Test:**\n\n"
-            f"📡 **Ping : ** `{ping:.2f} ms`\n"
-            f"⬇️ **download speed : ** `{st.download()/1e6:.2f} Mbps`\n"
-            f"⬆️ **upload speed : ** `{st.upload()/1e6:.2f} Mbps`"
+            f"📡 **Ping : ** `{st.results.ping:.2f} ms`\n"
+            f"⬇️ **Download : ** `{st.download()/1e6:.2f} Mbps`\n"
+            f"⬆️ **Upload : ** `{st.upload()/1e6:.2f} Mbps`"
         )
-    except Exception as e:
-        await msg.edit(f"❌ Speed Test Error: {e}")
+    except Exception as e: await msg.edit(f"❌ Speed Test Error: {e}")
 
-# --- 2. Stop Command ---
 @app.on_message(filters.command("stop") & filters.private)
 async def stop_handler(client, message):
     global is_stopped
     is_stopped = True
     await message.reply("🛑 **Stopped!** දැනට පවතින වැඩය නවතා සර්වර් එක Clear කරනු ඇත.")
 
-# --- 3. Temp Mail Command ---
 @app.on_message(filters.command("tempmail") & filters.private)
 async def get_temp(client, message):
     m = await message.reply("අලුත් Temp Mail එකක් සාදමින්... 📧")
     email, token = create_mail()
-    
     if email:
         user_temp_data[message.chat.id] = {"email": email, "token": token}
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Inbox පරීක්ෂා කරන්න", callback_data="check_inbox")]])
-        await m.edit(
-            f"✅ **ඔබේ තාවකාලික ඊමේල් ලිපිනය:**\n`{email}`\n\n"
-            f"පහත බොත්තම ඔබා Inbox එක පරීක්ෂා කරන්න.", 
-            reply_markup=keyboard
-        )
-    else:
-        await m.edit("❌ ඊමේල් එක සෑදීමට නොහැකි වුණා. පසුව උත්සාහ කරන්න.")
+        await m.edit(f"✅ **ඔබේ තාවකාලික ඊමේල් ලිපිනය:**\n`{email}`", reply_markup=keyboard)
+    else: await m.edit("❌ ඊමේල් එක සෑදීමට නොහැකි වුණා.")
 
-# --- 4. Temp Mail Callback (Button) ---
 @app.on_callback_query(filters.regex("^check_inbox$"))
 async def check_inbox_callback(client, callback_query):
-    chat_id = callback_query.message.chat.id
-    data = user_temp_data.get(chat_id)
-    
-    if not data:
-        await callback_query.answer("❌ ඔබට දැනට සක්‍රීය ඊමේල් එකක් නැත.", show_alert=True)
-        return
-    
-    await callback_query.answer("සම්පූර්ණ විස්තර පරීක්ෂා කරමින්... 🔍")
+    data = user_temp_data.get(callback_query.message.chat.id)
+    if not data: return await callback_query.answer("❌ සක්‍රීය ඊමේල් එකක් නැත.", show_alert=True)
     try:
         messages = check_inbox_api(data["token"])
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh Inbox", callback_data="check_inbox")]])
-        
         if not messages:
-            await callback_query.message.edit_text(
-                f"✅ **Email:** `{data['email']}`\n\n📭 **Inbox එක තවම හිස්.**", 
-                reply_markup=keyboard
-            )
-            return
-        
-        inbox_text = f"✅ **Email:** `{data['email']}`\n\n**📥 ලැබී ඇති පණිවිඩ:**\n\n"
+            return await callback_query.message.edit_text(f"✅ **Email:** `{data['email']}`\n\n📭 **Inbox හිස්.**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="check_inbox")]]))
+        text = f"✅ **Email:** `{data['email']}`\n\n**📥 පණිවිඩ:**\n\n"
         for msg in messages:
-            from_addr = msg['from']['address']
-            subject = msg['subject']
-            body = msg.get('text', 'No content available.')
-            
-            inbox_text += f"👤 **From:** `{from_addr}`\n"
-            inbox_text += f"📝 **Subject:** `{subject}`\n"
-            inbox_text += f"📄 **Message:**\n`{body[:800]}`\n" # අකුරු 800ක් දක්වා පෙන්වයි
-            inbox_text += "━━━━━━━━━━━━━━━━━━\n"
-            
-        await callback_query.message.edit_text(inbox_text, reply_markup=keyboard)
-    except:
-        await callback_query.answer("❌ දෝෂයක් මතු විය.", show_alert=True)
+            text += f"👤 **From:** `{msg['from']['address']}`\n📝 **Subject:** `{msg['subject']}`\n📄 **Msg:** `{msg.get('text', '')[:500]}`\n━━━━━━━━━━━━\n"
+        await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="check_inbox")]]))
+    except: await callback_query.answer("❌ දෝෂයක් මතු විය.")
 
-# --- 5. Download Queue System ---
+# --- Chunked Download System (Saves Server Space) ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     global is_stopped
     is_stopped = False
-    
     links = message.text.split()[1:]
-    if not links:
-        await message.reply("භාවිතය: `/download link1 link2`")
-        return
-
-    await message.reply(f"🔗 ලින්ක් {len(links)}ක් ලැබුණා. වැඩේ පටන් ගත්තා!")
+    if not links: return await message.reply("භාවිතය: `/download link1 link2`")
 
     for link in links:
         if is_stopped: break
-        s_msg = await message.reply(f"සම්බන්ධ වෙමින්: `{link}`")
-        fn = ""
+        s_msg = await message.reply(f"🔗 සම්බන්ධ වෙමින්: `{link}`")
         try:
-            with requests.get(link, headers=HEADERS, stream=True, timeout=30, allow_redirects=True) as r:
-                r.raise_for_status()
-                fn = get_filename(link, r.headers)
-                size = int(r.headers.get('content-length', 0))
-                limit = 1990 * 1024 * 1024 # 2GB limit
+            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=10)
+            total_size = int(head.headers.get('content-length', 0))
+            fn = get_filename(link, head.headers)
+            
+            num_chunks = math.ceil(total_size / CHUNK_SIZE) if total_size > 0 else 1
 
-                with open(fn, 'wb') as f:
-                    dl = 0
-                    for chunk in r.iter_content(chunk_size=1024*1024):
-                        if is_stopped: raise Exception("STOPPED_BY_USER")
-                        if chunk:
-                            f.write(chunk)
-                            dl += len(chunk)
-                            await progress(dl, size, s_msg, "📥 Downloading", fn)
-
-                if size <= limit:
-                    await client.send_document(
-                        message.chat.id, 
-                        document=fn, 
-                        caption=f"✅ `{fn}`",
-                        progress=progress, 
-                        progress_args=(s_msg, "📤 Uploading", fn)
-                    )
-                else:
-                    await s_msg.edit(f"📦 විශාල ෆයිල් එකක්. (2GB ට වැඩියි)")
+            for i in range(num_chunks):
+                if is_stopped: break
+                start = i * CHUNK_SIZE
+                end = min(start + CHUNK_SIZE - 1, total_size - 1) if total_size > 0 else None
                 
-                if os.path.exists(fn): os.remove(fn)
-                await s_msg.delete()
+                part_fn = f"part_{i+1}_{fn}"
+                r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if total_size > CHUNK_SIZE else HEADERS
+                
+                with requests.get(link, headers=r_headers, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    p_size = int(r.headers.get('content-length', 0))
+                    with open(part_fn, 'wb') as f:
+                        dl = 0
+                        for chunk in r.iter_content(chunk_size=1024*1024):
+                            if is_stopped: raise Exception("STOPPED_BY_USER")
+                            if chunk:
+                                f.write(chunk)
+                                dl += len(chunk)
+                                await progress(dl, p_size, s_msg, f"📥 Part {i+1}/{num_chunks} Downloading", part_fn)
 
+                await client.send_document(
+                    message.chat.id, 
+                    document=part_fn, 
+                    caption=f"✅ `{fn}` - Part {i+1}/{num_chunks}",
+                    progress=progress, 
+                    progress_args=(s_msg, f"📤 Part {i+1} Uploading", part_fn)
+                )
+                if os.path.exists(part_fn): os.remove(part_fn) # එක කොටසක් අප්ලෝඩ් වූ පසු එය මකා දමයි
+
+            await s_msg.delete()
         except Exception as e:
-            if str(e) == "STOPPED_BY_USER":
-                if fn and os.path.exists(fn): os.remove(fn)
-                await s_msg.edit(f"🛑 **Stopped:** වැඩය නැවැත්තුවා. සර්වර් එක Clear.")
-                break
-            else:
-                await s_msg.edit(f"❌ Error: {str(e)}")
-                if fn and os.path.exists(fn): os.remove(fn)
+            if str(e) == "STOPPED_BY_USER": await s_msg.edit("🛑 Stopped!")
+            else: await s_msg.edit(f"❌ Error: {str(e)}")
+            for f in os.listdir("."):
+                if f.startswith("part_"): os.remove(f)
+            break
 
-    if not is_stopped:
-        await message.reply("✅ සියලුම ලින්ක් download කර අවසන්!")
+    if not is_stopped: await message.reply("✅ සියලුම වැඩ අවසන්!")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
