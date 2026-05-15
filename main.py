@@ -7,6 +7,7 @@ import re
 import random
 import string
 import math
+import asyncio
 from urllib.parse import unquote
 from flask import Flask
 from pyrogram import Client, filters
@@ -24,8 +25,8 @@ def run_flask():
 is_stopped = False
 last_update_time = 0
 user_temp_data = {} 
-MAX_SINGLE_SIZE = 1.9 * 1024 * 1024 * 1024  # 1.9GB (මෙයට වඩා වැඩි නම් split කරයි)
-SPLIT_CHUNK_SIZE = 500 * 1024 * 1024        # 500MB (කැබලි වල ප්‍රමාණය)
+MAX_SINGLE_SIZE = 1.9 * 1024 * 1024 * 1024  # 1.9GB
+SPLIT_CHUNK_SIZE = 500 * 1024 * 1024        # 500MB
 
 # --- Temp Mail Functions ---
 def generate_random_string(length=10):
@@ -63,18 +64,18 @@ async def progress(current, total, message, type_msg, fn):
     global last_update_time, is_stopped
     if is_stopped: raise Exception("STOPPED_BY_USER")
     now = time.time()
-    if now - last_update_time < 4 or current == total:
-        last_update_time = now
-        if total <= 0: return
-        percent = current * 100 / total
-        progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
-        try:
-            await message.edit(
-                f"**{type_msg}:** `{fn}`\n"
-                f"📊 `{progress_bar}` **{percent:.1f}%**\n"
-                f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
-            )
-        except: pass
+    if now - last_update_time < 5 and current != total: return
+    last_update_time = now
+    if total <= 0: return
+    percent = current * 100 / total
+    progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
+    try:
+        await message.edit(
+            f"**{type_msg}:** `{fn}`\n"
+            f"📊 `{progress_bar}` **{percent:.1f}%**\n"
+            f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
+        )
+    except: pass
 
 # --- Configurations ---
 API_ID = os.environ.get("API_ID")
@@ -93,10 +94,10 @@ def get_filename(url, headers):
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
         if fname: 
             name = unquote(fname[0].strip())
-            return name.replace("/", "_")
+            return name.replace("/", "_").replace("\\", "_")
     name = url.split("/")[-1].split("?")[0]
     name = unquote(name) if name and "." in name else f"file_{int(time.time())}.zip"
-    return name.replace("/", "_")
+    return name.replace("/", "_").replace("\\", "_")
 
 # ================= COMMANDS =================
 
@@ -154,7 +155,7 @@ async def check_inbox_callback(client, callback_query):
         await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="check_inbox")]]))
     except: await callback_query.answer("❌ දෝෂයක් මතු විය.")
 
-# --- Improved Download System (Smart Splitting) ---
+# --- Improved Download System ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     global is_stopped
@@ -165,12 +166,13 @@ async def dl_handler(client, message):
     for link in links:
         if is_stopped: break
         s_msg = await message.reply(f"🔗 සම්බන්ධ වෙමින්: `{link}`")
+        fn = None
         try:
-            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=10)
+            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=15)
             total_size = int(head.headers.get('content-length', 0))
             fn = get_filename(link, head.headers)
             
-            # Logic: 1.9GB ට වැඩි නම් 500MB කෑලි, නැතිනම් සම්පූර්ණ ෆයිල් එක
+            # Logic selecting chunk size
             if total_size > MAX_SINGLE_SIZE:
                 active_chunk = SPLIT_CHUNK_SIZE
                 num_chunks = math.ceil(total_size / active_chunk)
@@ -188,19 +190,22 @@ async def dl_handler(client, message):
                 part_fn = f"part_{i+1}_{fn}" if num_chunks > 1 else fn
                 r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if num_chunks > 1 else HEADERS
                 
+                # Download Part
                 with requests.get(link, headers=r_headers, stream=True, timeout=30) as r:
                     r.raise_for_status()
                     p_size = int(r.headers.get('content-length', 0))
                     with open(part_fn, 'wb') as f:
                         dl = 0
-                        for chunk in r.iter_content(chunk_size=1024*1024):
+                        for chunk in r.iter_content(chunk_size=512*1024): # Smaller chunk size for stability
                             if is_stopped: raise Exception("STOPPED_BY_USER")
                             if chunk:
                                 f.write(chunk)
                                 dl += len(chunk)
                                 label = f"📥 Part {i+1}/{num_chunks}" if num_chunks > 1 else "📥 Downloading"
                                 await progress(dl, p_size, s_msg, label, part_fn)
+                                await asyncio.sleep(0.01) # හිරවීම වැළැක්වීමට විවේකයක් ලබාදීම
 
+                # Upload Part
                 await client.send_document(
                     message.chat.id, 
                     document=part_fn, 
@@ -208,14 +213,17 @@ async def dl_handler(client, message):
                     progress=progress, 
                     progress_args=(s_msg, f"📤 Uploading" + (f" Part {i+1}" if num_chunks > 1 else ""), part_fn)
                 )
-                if os.path.exists(part_fn): os.remove(part_fn) # සර්වර් එක clear කරයි
+                if os.path.exists(part_fn): os.remove(part_fn)
+                await asyncio.sleep(1) # Upload අතර පොඩි පරතරයක්
 
             await s_msg.delete()
         except Exception as e:
-            if str(e) == "STOPPED_BY_USER": await s_msg.edit("🛑 Stopped!")
-            else: await s_msg.edit(f"❌ Error: {str(e)}")
+            err_msg = str(e)
+            if err_msg == "STOPPED_BY_USER": await s_msg.edit("🛑 Stopped!")
+            else: await s_msg.edit(f"❌ Error: {err_msg}")
+            # Cleanup
             for f in os.listdir("."):
-                if f.startswith("part_") or (fn and f == fn): 
+                if f.startswith("part_") or (fn and f == fn):
                     try: os.remove(f)
                     except: pass
             break
