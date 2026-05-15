@@ -20,11 +20,12 @@ def home(): return "බොට් සාර්ථකව ක්‍රියාත�
 def run_flask(): 
     flask_app.run(host='0.0.0.0', port=8000)
 
-# --- Global Variables ---
+# --- Global Variables & Limits ---
 is_stopped = False
 last_update_time = 0
 user_temp_data = {} 
-CHUNK_SIZE = 1900 * 1024 * 1024  # 1.9GB (ටෙලිග්‍රෑම් ලිමිට් එකට අඩුවෙන්)
+MAX_SINGLE_SIZE = 1.9 * 1024 * 1024 * 1024  # 1.9GB (මෙයට වඩා වැඩි නම් split කරයි)
+SPLIT_CHUNK_SIZE = 500 * 1024 * 1024        # 500MB (කැබලි වල ප්‍රමාණය)
 
 # --- Temp Mail Functions ---
 def generate_random_string(length=10):
@@ -62,18 +63,18 @@ async def progress(current, total, message, type_msg, fn):
     global last_update_time, is_stopped
     if is_stopped: raise Exception("STOPPED_BY_USER")
     now = time.time()
-    if now - last_update_time < 4 and current != total: return
-    last_update_time = now
-    if total <= 0: return
-    percent = current * 100 / total
-    progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
-    try:
-        await message.edit(
-            f"**{type_msg}:** `{fn}`\n"
-            f"📊 `{progress_bar}` **{percent:.1f}%**\n"
-            f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
-        )
-    except: pass
+    if now - last_update_time < 4 or current == total:
+        last_update_time = now
+        if total <= 0: return
+        percent = current * 100 / total
+        progress_bar = "".join(["▰" if i < int(percent / 10) else "▱" for i in range(10)])
+        try:
+            await message.edit(
+                f"**{type_msg}:** `{fn}`\n"
+                f"📊 `{progress_bar}` **{percent:.1f}%**\n"
+                f"📦 **{current/(1024*1024):.1f}MB** / **{total/(1024*1024):.1f}MB**"
+            )
+        except: pass
 
 # --- Configurations ---
 API_ID = os.environ.get("API_ID")
@@ -86,14 +87,13 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 }
 
-# ෆයිල් නමේ තිබෙන දෝෂ (Error) නිවැරදි කරන Function එක
 def get_filename(url, headers):
     cd = headers.get('content-disposition')
     if cd:
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
         if fname: 
             name = unquote(fname[0].strip())
-            return name.replace("/", "_") # '/' ලකුණ ඉවත් කරයි
+            return name.replace("/", "_")
     name = url.split("/")[-1].split("?")[0]
     name = unquote(name) if name and "." in name else f"file_{int(time.time())}.zip"
     return name.replace("/", "_")
@@ -154,13 +154,13 @@ async def check_inbox_callback(client, callback_query):
         await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="check_inbox")]]))
     except: await callback_query.answer("❌ දෝෂයක් මතු විය.")
 
-# --- Chunked Download System (Saves Server Space) ---
+# --- Improved Download System (Smart Splitting) ---
 @app.on_message(filters.command("download") & filters.private)
 async def dl_handler(client, message):
     global is_stopped
     is_stopped = False
     links = message.text.split()[1:]
-    if not links: return await message.reply("භාවිතය: `/download link1 link2`")
+    if not links: return await message.reply("භාවිතය: `/download link`")
 
     for link in links:
         if is_stopped: break
@@ -170,15 +170,23 @@ async def dl_handler(client, message):
             total_size = int(head.headers.get('content-length', 0))
             fn = get_filename(link, head.headers)
             
-            num_chunks = math.ceil(total_size / CHUNK_SIZE) if total_size > 0 else 1
+            # Logic: 1.9GB ට වැඩි නම් 500MB කෑලි, නැතිනම් සම්පූර්ණ ෆයිල් එක
+            if total_size > MAX_SINGLE_SIZE:
+                active_chunk = SPLIT_CHUNK_SIZE
+                num_chunks = math.ceil(total_size / active_chunk)
+                await s_msg.edit(f"📦 විශාල ෆයිල් එකක්. කොටස් {num_chunks} කට (500MB බැගින්) බෙදා බාගත කරයි...")
+            else:
+                active_chunk = total_size
+                num_chunks = 1
 
             for i in range(num_chunks):
                 if is_stopped: break
-                start = i * CHUNK_SIZE
-                end = min(start + CHUNK_SIZE - 1, total_size - 1) if total_size > 0 else None
                 
-                part_fn = f"part_{i+1}_{fn}"
-                r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if total_size > CHUNK_SIZE else HEADERS
+                start = i * active_chunk
+                end = min(start + active_chunk - 1, total_size - 1) if total_size > 0 else None
+                
+                part_fn = f"part_{i+1}_{fn}" if num_chunks > 1 else fn
+                r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if num_chunks > 1 else HEADERS
                 
                 with requests.get(link, headers=r_headers, stream=True, timeout=30) as r:
                     r.raise_for_status()
@@ -190,23 +198,26 @@ async def dl_handler(client, message):
                             if chunk:
                                 f.write(chunk)
                                 dl += len(chunk)
-                                await progress(dl, p_size, s_msg, f"📥 Part {i+1}/{num_chunks} Downloading", part_fn)
+                                label = f"📥 Part {i+1}/{num_chunks}" if num_chunks > 1 else "📥 Downloading"
+                                await progress(dl, p_size, s_msg, label, part_fn)
 
                 await client.send_document(
                     message.chat.id, 
                     document=part_fn, 
-                    caption=f"✅ `{fn}` - Part {i+1}/{num_chunks}",
+                    caption=f"✅ `{fn}`" + (f" - Part {i+1}/{num_chunks}" if num_chunks > 1 else ""),
                     progress=progress, 
-                    progress_args=(s_msg, f"📤 Part {i+1} Uploading", part_fn)
+                    progress_args=(s_msg, f"📤 Uploading" + (f" Part {i+1}" if num_chunks > 1 else ""), part_fn)
                 )
-                if os.path.exists(part_fn): os.remove(part_fn) # එක කොටසක් අප්ලෝඩ් වූ පසු එය මකා දමයි
+                if os.path.exists(part_fn): os.remove(part_fn) # සර්වර් එක clear කරයි
 
             await s_msg.delete()
         except Exception as e:
             if str(e) == "STOPPED_BY_USER": await s_msg.edit("🛑 Stopped!")
             else: await s_msg.edit(f"❌ Error: {str(e)}")
             for f in os.listdir("."):
-                if f.startswith("part_"): os.remove(f)
+                if f.startswith("part_") or (fn and f == fn): 
+                    try: os.remove(f)
+                    except: pass
             break
 
     if not is_stopped: await message.reply("✅ සියලුම වැඩ අවසන්!")
