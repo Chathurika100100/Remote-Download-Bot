@@ -88,36 +88,27 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 }
 
-def get_filename(url, headers):
-    # 1. Content-Disposition header එකෙන් හොයාගන්න
+def extract_filename_from_url(url):
+    """URL එකෙන් file name එක extract කරන්න"""
+    parsed = url.split("/")[-1].split("?")[0]
+    if parsed and "." in parsed:
+        name = unquote(parsed)
+        return name.replace("/", "_").replace("\\", "_")
+    return None
+
+def extract_filename_from_headers(headers):
+    """Headers වලින් file name එක extract කරන්න"""
     cd = headers.get('content-disposition')
     if cd:
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
         if fname: 
             name = unquote(fname[0].strip())
             return name.replace("/", "_").replace("\\", "_")
-    
-    # 2. Final redirect URL එකෙන් file name එක ගන්න
-    try:
-        r = requests.get(url, headers=HEADERS, allow_redirects=True, stream=True, timeout=10)
-        final_url = r.url
-        r.close()
-        
-        parsed = final_url.split("/")[-1].split("?")[0]
-        if parsed and "." in parsed:
-            name = unquote(parsed)
-            return name.replace("/", "_").replace("\\", "_")
-    except:
-        pass
-    
-    # 3. URL එකේම file name එක හොයාගන්න
-    name = url.split("/")[-1].split("?")[0]
-    if name and "." in name:
-        name = unquote(name)
-        return name.replace("/", "_").replace("\\", "_")
-    
-    # 4. Content-Type එකෙන් extension එක guess කරලා
-    content_type = headers.get('content-type', '').lower()
+    return None
+
+def guess_extension_from_content_type(content_type):
+    """Content-Type එකෙන් extension එක guess කරන්න"""
+    content_type = content_type.lower() if content_type else ''
     ext_map = {
         'application/zip': '.zip',
         'application/x-zip-compressed': '.zip',
@@ -135,13 +126,35 @@ def get_filename(url, headers):
         'image/gif': '.gif',
         'application/vnd.android.package-archive': '.apk',
     }
-    
     for ct, ext in ext_map.items():
         if ct in content_type:
-            return f"file_{int(time.time())}{ext}"
+            return ext
+    return '.zip'
+
+def get_filename(url, headers, final_url=None):
+    """
+    File name එක හොයාගන්න - multiple methods එකට try කරනවා
+    Priority: Content-Disposition > Final URL > Original URL > Guess from Content-Type
+    """
+    # 1. Content-Disposition header එකෙන්
+    name = extract_filename_from_headers(headers)
+    if name:
+        return name
     
-    # 5. කිසිවක් නැත්නම් default
-    return f"file_{int(time.time())}.zip"
+    # 2. Final redirect URL එකෙන්
+    if final_url and final_url != url:
+        name = extract_filename_from_url(final_url)
+        if name:
+            return name
+    
+    # 3. Original URL එකෙන්
+    name = extract_filename_from_url(url)
+    if name:
+        return name
+    
+    # 4. Content-Type එකෙන් extension guess කරලා
+    ext = guess_extension_from_content_type(headers.get('content-type', ''))
+    return f"file_{int(time.time())}{ext}"
 
 # ================= COMMANDS =================
 
@@ -212,13 +225,13 @@ async def dl_handler(client, message):
         s_msg = await message.reply(f"🔗 සම්බන්ධ වෙමින්: `{link}`")
         fn = None
         try:
-            # GET request එකක් දාලා final URL එකත් ගන්න
-            head = requests.get(link, headers=HEADERS, allow_redirects=True, stream=True, timeout=15)
-            head.close()
-            
-            # Final URL එකෙන් හෝ headers වලින් file name ගන්න
-            fn = get_filename(head.url, head.headers)
+            # === HEAD REQUEST එකක් දාලා file info ගන්න ===
+            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=15)
+            final_url = head.url  # Redirect වුණා නම් final URL
             total_size = int(head.headers.get('content-length', 0))
+            
+            # === එකම file name එක use කරනවා ===
+            fn = get_filename(link, head.headers, final_url)
             
             await s_msg.edit(f"📁 **File:** `{fn}`\n📦 **Size:** {total_size/(1024*1024):.1f}MB")
             
@@ -240,7 +253,7 @@ async def dl_handler(client, message):
                 part_fn = f"part_{i+1}_{fn}" if num_chunks > 1 else fn
                 r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if num_chunks > 1 else HEADERS
                 
-                # Download Part
+                # Download Part - එකම original link එකෙන්ම
                 with requests.get(link, headers=r_headers, stream=True, timeout=30) as r:
                     r.raise_for_status()
                     p_size = int(r.headers.get('content-length', 0))
