@@ -88,25 +88,36 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 }
 
-def extract_filename_from_url(url):
-    """URL එකෙන් file name එක extract කරන්න"""
-    parsed = url.split("/")[-1].split("?")[0]
-    if parsed and "." in parsed:
-        name = unquote(parsed)
-        return name.replace("/", "_").replace("\\", "_")
-    return None
-
-def extract_filename_from_headers(headers):
-    """Headers වලින් file name එක extract කරන්න"""
-    cd = headers.get('content-disposition')
+def get_filename_from_response(response):
+    """
+    Response object එකකින් file name එක හොයාගන්න
+    Priority: Content-Disposition > Final URL > Original URL
+    """
+    # 1. Content-Disposition header
+    cd = response.headers.get('content-disposition')
     if cd:
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
         if fname: 
             name = unquote(fname[0].strip())
             return name.replace("/", "_").replace("\\", "_")
+    
+    # 2. Final URL (after redirects)
+    final_url = response.url
+    parsed = final_url.split("/")[-1].split("?")[0]
+    if parsed and "." in parsed:
+        name = unquote(parsed)
+        return name.replace("/", "_").replace("\\", "_")
+    
+    # 3. Original URL
+    original_url = response.request.url if hasattr(response.request, 'url') else final_url
+    parsed = original_url.split("/")[-1].split("?")[0]
+    if parsed and "." in parsed:
+        name = unquote(parsed)
+        return name.replace("/", "_").replace("\\", "_")
+    
     return None
 
-def guess_extension_from_content_type(content_type):
+def get_extension_from_content_type(content_type):
     """Content-Type එකෙන් extension එක guess කරන්න"""
     content_type = content_type.lower() if content_type else ''
     ext_map = {
@@ -130,31 +141,6 @@ def guess_extension_from_content_type(content_type):
         if ct in content_type:
             return ext
     return '.zip'
-
-def get_filename(url, headers, final_url=None):
-    """
-    File name එක හොයාගන්න - multiple methods එකට try කරනවා
-    Priority: Content-Disposition > Final URL > Original URL > Guess from Content-Type
-    """
-    # 1. Content-Disposition header එකෙන්
-    name = extract_filename_from_headers(headers)
-    if name:
-        return name
-    
-    # 2. Final redirect URL එකෙන්
-    if final_url and final_url != url:
-        name = extract_filename_from_url(final_url)
-        if name:
-            return name
-    
-    # 3. Original URL එකෙන්
-    name = extract_filename_from_url(url)
-    if name:
-        return name
-    
-    # 4. Content-Type එකෙන් extension guess කරලා
-    ext = guess_extension_from_content_type(headers.get('content-type', ''))
-    return f"file_{int(time.time())}{ext}"
 
 # ================= COMMANDS =================
 
@@ -221,77 +207,117 @@ async def dl_handler(client, message):
     if not links: return await message.reply("භාවිතය: `/download link`")
 
     for link in links:
-        if is_stopped: break
+        if is_stopped: 
+            break
+        
         s_msg = await message.reply(f"🔗 සම්බන්ධ වෙමින්: `{link}`")
         fn = None
+        temp_files = []  # Cleanup කරන්න file list එකක්
+        
         try:
-            # === HEAD REQUEST එකක් දාලා file info ගන්න ===
-            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=15)
-            final_url = head.url  # Redirect වුණා නම් final URL
-            total_size = int(head.headers.get('content-length', 0))
-            
-            # === එකම file name එක use කරනවා ===
-            fn = get_filename(link, head.headers, final_url)
-            
-            await s_msg.edit(f"📁 **File:** `{fn}`\n📦 **Size:** {total_size/(1024*1024):.1f}MB")
-            
-            # Logic selecting chunk size
-            if total_size > MAX_SINGLE_SIZE:
-                active_chunk = SPLIT_CHUNK_SIZE
-                num_chunks = math.ceil(total_size / active_chunk)
-                await s_msg.edit(f"📁 **File:** `{fn}`\n📦 විශාල ෆයිල් එකක්. කොටස් {num_chunks} කට (500MB බැගින්) බෙදා බාගත කරයි...")
-            else:
-                active_chunk = total_size
-                num_chunks = 1
-
-            for i in range(num_chunks):
-                if is_stopped: break
+            # === එකම GET request එකකින් file info ගන්න ===
+            # stream=True දාලා headers ගන්නවා, ඒත් download නොකරනවා
+            with requests.get(link, headers=HEADERS, allow_redirects=True, stream=True, timeout=15) as r:
+                r.raise_for_status()
                 
-                start = i * active_chunk
-                end = min(start + active_chunk - 1, total_size - 1) if total_size > 0 else None
+                # File name එක response එකෙන්ම ගන්න
+                fn = get_filename_from_response(r)
+                if not fn:
+                    # File name හොයාගන්න බැරිනම් content-type එකෙන් guess කරන්න
+                    ext = get_extension_from_content_type(r.headers.get('content-type', ''))
+                    fn = f"file_{int(time.time())}{ext}"
                 
-                part_fn = f"part_{i+1}_{fn}" if num_chunks > 1 else fn
-                r_headers = {**HEADERS, 'Range': f'bytes={start}-{end}'} if num_chunks > 1 else HEADERS
+                total_size = int(r.headers.get('content-length', 0))
                 
-                # Download Part - එකම original link එකෙන්ම
-                with requests.get(link, headers=r_headers, stream=True, timeout=30) as r:
-                    r.raise_for_status()
-                    p_size = int(r.headers.get('content-length', 0))
-                    with open(part_fn, 'wb') as f:
-                        dl = 0
-                        for chunk in r.iter_content(chunk_size=512*1024):
-                            if is_stopped: raise Exception("STOPPED_BY_USER")
-                            if chunk:
-                                f.write(chunk)
-                                dl += len(chunk)
-                                label = f"📥 Part {i+1}/{num_chunks}" if num_chunks > 1 else "📥 Downloading"
-                                await progress(dl, p_size, s_msg, label, part_fn)
-                                await asyncio.sleep(0.01)
+                # Early return if stopped
+                if is_stopped:
+                    await s_msg.edit("🛑 Stopped!")
+                    break
+                
+                await s_msg.edit(f"📁 **File:** `{fn}`\n📦 **Size:** {total_size/(1024*1024):.1f}MB")
+                
+                # Chunk logic
+                if total_size > MAX_SINGLE_SIZE:
+                    active_chunk = SPLIT_CHUNK_SIZE
+                    num_chunks = math.ceil(total_size / active_chunk)
+                    await s_msg.edit(f"📁 **File:** `{fn}`\n📦 විශාල ෆයිල් එකක්. කොටස් {num_chunks} කට (500MB බැගින්) බෙදා බාගත කරයි...")
+                else:
+                    active_chunk = total_size if total_size > 0 else None
+                    num_chunks = 1
 
-                # Upload Part
-                await client.send_document(
-                    message.chat.id, 
-                    document=part_fn, 
-                    caption=f"✅ `{fn}`" + (f" - Part {i+1}/{num_chunks}" if num_chunks > 1 else ""),
-                    progress=progress, 
-                    progress_args=(s_msg, f"📤 Uploading" + (f" Part {i+1}" if num_chunks > 1 else ""), part_fn)
-                )
-                if os.path.exists(part_fn): os.remove(part_fn)
-                await asyncio.sleep(1)
-
-            await s_msg.delete()
+                # === එක chunk එකක් හෝ multiple chunks download කරන්න ===
+                for i in range(num_chunks):
+                    if is_stopped:
+                        break
+                    
+                    start = i * active_chunk if active_chunk else 0
+                    end = min(start + active_chunk - 1, total_size - 1) if total_size > 0 and active_chunk else None
+                    
+                    part_fn = f"part_{i+1}_{fn}" if num_chunks > 1 else fn
+                    temp_files.append(part_fn)
+                    
+                    # Range headers
+                    r_headers = {**HEADERS}
+                    if num_chunks > 1 and end is not None:
+                        r_headers['Range'] = f'bytes={start}-{end}'
+                    
+                    # Download chunk
+                    with requests.get(link, headers=r_headers, stream=True, timeout=30) as chunk_r:
+                        chunk_r.raise_for_status()
+                        p_size = int(chunk_r.headers.get('content-length', 0))
+                        
+                        with open(part_fn, 'wb') as f:
+                            dl = 0
+                            for chunk in chunk_r.iter_content(chunk_size=512*1024):
+                                if is_stopped:
+                                    raise Exception("STOPPED_BY_USER")
+                                if chunk:
+                                    f.write(chunk)
+                                    dl += len(chunk)
+                                    label = f"📥 Part {i+1}/{num_chunks}" if num_chunks > 1 else "📥 Downloading"
+                                    await progress(dl, p_size, s_msg, label, part_fn)
+                                    await asyncio.sleep(0.01)
+                    
+                    # Upload chunk
+                    if not is_stopped:
+                        await client.send_document(
+                            message.chat.id, 
+                            document=part_fn, 
+                            caption=f"✅ `{fn}`" + (f" - Part {i+1}/{num_chunks}" if num_chunks > 1 else ""),
+                            progress=progress, 
+                            progress_args=(s_msg, f"📤 Uploading" + (f" Part {i+1}" if num_chunks > 1 else ""), part_fn)
+                        )
+                    
+                    # Cleanup part file
+                    if os.path.exists(part_fn):
+                        os.remove(part_fn)
+                        temp_files.remove(part_fn)
+                    
+                    await asyncio.sleep(1)
+                
+                # Success message
+                if not is_stopped:
+                    await s_msg.delete()
+            
         except Exception as e:
             err_msg = str(e)
-            if err_msg == "STOPPED_BY_USER": await s_msg.edit("🛑 Stopped!")
-            else: await s_msg.edit(f"❌ Error: {err_msg}")
-            # Cleanup
-            for f in os.listdir("."):
-                if f.startswith("part_") or (fn and f == fn):
-                    try: os.remove(f)
-                    except: pass
+            if err_msg == "STOPPED_BY_USER":
+                await s_msg.edit("🛑 Stopped!")
+            else:
+                await s_msg.edit(f"❌ Error: {err_msg}")
+            
+            # Cleanup all temp files
+            for tf in temp_files:
+                try:
+                    if os.path.exists(tf):
+                        os.remove(tf)
+                except: pass
+            
+            # Break loop on error
             break
 
-    if not is_stopped: await message.reply("✅ සියලුම වැඩ අවසන්!")
+    if not is_stopped:
+        await message.reply("✅ සියලුම වැඩ අවසන්!")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
