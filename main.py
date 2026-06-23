@@ -89,15 +89,59 @@ HEADERS = {
 }
 
 def get_filename(url, headers):
+    # 1. Content-Disposition header එකෙන් හොයාගන්න
     cd = headers.get('content-disposition')
     if cd:
         fname = re.findall(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
         if fname: 
             name = unquote(fname[0].strip())
             return name.replace("/", "_").replace("\\", "_")
+    
+    # 2. Final redirect URL එකෙන් file name එක ගන්න
+    try:
+        r = requests.get(url, headers=HEADERS, allow_redirects=True, stream=True, timeout=10)
+        final_url = r.url
+        r.close()
+        
+        parsed = final_url.split("/")[-1].split("?")[0]
+        if parsed and "." in parsed:
+            name = unquote(parsed)
+            return name.replace("/", "_").replace("\\", "_")
+    except:
+        pass
+    
+    # 3. URL එකේම file name එක හොයාගන්න
     name = url.split("/")[-1].split("?")[0]
-    name = unquote(name) if name and "." in name else f"file_{int(time.time())}.zip"
-    return name.replace("/", "_").replace("\\", "_")
+    if name and "." in name:
+        name = unquote(name)
+        return name.replace("/", "_").replace("\\", "_")
+    
+    # 4. Content-Type එකෙන් extension එක guess කරලා
+    content_type = headers.get('content-type', '').lower()
+    ext_map = {
+        'application/zip': '.zip',
+        'application/x-zip-compressed': '.zip',
+        'application/x-rar-compressed': '.rar',
+        'application/x-7z-compressed': '.7z',
+        'application/pdf': '.pdf',
+        'application/octet-stream': '.bin',
+        'video/mp4': '.mp4',
+        'video/x-matroska': '.mkv',
+        'video/avi': '.avi',
+        'audio/mpeg': '.mp3',
+        'audio/mp4': '.m4a',
+        'image/jpeg': '.jpg',
+        'image/png': '.png',
+        'image/gif': '.gif',
+        'application/vnd.android.package-archive': '.apk',
+    }
+    
+    for ct, ext in ext_map.items():
+        if ct in content_type:
+            return f"file_{int(time.time())}{ext}"
+    
+    # 5. කිසිවක් නැත්නම් default
+    return f"file_{int(time.time())}.zip"
 
 # ================= COMMANDS =================
 
@@ -168,15 +212,21 @@ async def dl_handler(client, message):
         s_msg = await message.reply(f"🔗 සම්බන්ධ වෙමින්: `{link}`")
         fn = None
         try:
-            head = requests.head(link, headers=HEADERS, allow_redirects=True, timeout=15)
+            # GET request එකක් දාලා final URL එකත් ගන්න
+            head = requests.get(link, headers=HEADERS, allow_redirects=True, stream=True, timeout=15)
+            head.close()
+            
+            # Final URL එකෙන් හෝ headers වලින් file name ගන්න
+            fn = get_filename(head.url, head.headers)
             total_size = int(head.headers.get('content-length', 0))
-            fn = get_filename(link, head.headers)
+            
+            await s_msg.edit(f"📁 **File:** `{fn}`\n📦 **Size:** {total_size/(1024*1024):.1f}MB")
             
             # Logic selecting chunk size
             if total_size > MAX_SINGLE_SIZE:
                 active_chunk = SPLIT_CHUNK_SIZE
                 num_chunks = math.ceil(total_size / active_chunk)
-                await s_msg.edit(f"📦 විශාල ෆයිල් එකක්. කොටස් {num_chunks} කට (500MB බැගින්) බෙදා බාගත කරයි...")
+                await s_msg.edit(f"📁 **File:** `{fn}`\n📦 විශාල ෆයිල් එකක්. කොටස් {num_chunks} කට (500MB බැගින්) බෙදා බාගත කරයි...")
             else:
                 active_chunk = total_size
                 num_chunks = 1
@@ -196,14 +246,14 @@ async def dl_handler(client, message):
                     p_size = int(r.headers.get('content-length', 0))
                     with open(part_fn, 'wb') as f:
                         dl = 0
-                        for chunk in r.iter_content(chunk_size=512*1024): # Smaller chunk size for stability
+                        for chunk in r.iter_content(chunk_size=512*1024):
                             if is_stopped: raise Exception("STOPPED_BY_USER")
                             if chunk:
                                 f.write(chunk)
                                 dl += len(chunk)
                                 label = f"📥 Part {i+1}/{num_chunks}" if num_chunks > 1 else "📥 Downloading"
                                 await progress(dl, p_size, s_msg, label, part_fn)
-                                await asyncio.sleep(0.01) # හිරවීම වැළැක්වීමට විවේකයක් ලබාදීම
+                                await asyncio.sleep(0.01)
 
                 # Upload Part
                 await client.send_document(
@@ -214,7 +264,7 @@ async def dl_handler(client, message):
                     progress_args=(s_msg, f"📤 Uploading" + (f" Part {i+1}" if num_chunks > 1 else ""), part_fn)
                 )
                 if os.path.exists(part_fn): os.remove(part_fn)
-                await asyncio.sleep(1) # Upload අතර පොඩි පරතරයක්
+                await asyncio.sleep(1)
 
             await s_msg.delete()
         except Exception as e:
